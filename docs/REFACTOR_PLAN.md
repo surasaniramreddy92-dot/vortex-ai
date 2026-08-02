@@ -1,0 +1,255 @@
+# VORTEX — Refactor Plan
+
+Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
+(target design). This is the *sequence* — what changes, in what order, and
+the exit criteria for each step. Nothing in this document has been executed
+yet beyond Step 0 (safety net) and Step 1 prep; each subsequent step waits
+for explicit sign-off before starting, per your instruction.
+
+**Hard rule for every step below:** run whatever tests exist, confirm no
+regression in the "preserve these" feature list, report exactly which files
+changed and why, and stop if anything that currently works stops working.
+
+---
+
+## Step 0 — Safety net (done as part of this audit turn)
+
+- Tagged the current commit `pre-modular-refactor` so there's an immediate,
+  named rollback point regardless of what happens next.
+- This document set (`CURRENT_STATE.md`, `REFACTOR_PLAN.md`,
+  `ARCHITECTURE.md`) is the map; nothing gets moved blind.
+- Per your "most important rule": before any code in `main.py` is deleted or
+  overwritten, it will first be copied to `legacy/main_working_baseline.py`
+  so there is a literal, in-repo, always-available reference copy — not just
+  a git tag someone has to know to check out.
+
+## Step 1 — Project metadata & config foundation (proposed next step, awaiting approval)
+
+**Goal:** make the repo pip-installable and typed-config-driven *without
+changing any runtime behavior yet*. This is the lowest-risk possible first
+step — it adds files, it doesn't move logic.
+
+**Files added:**
+- `pyproject.toml` — project metadata, dependency groups (`core`, `voice`,
+  `windows`, `dev`), replacing the implicit "just pip install -r
+  requirements.txt" flow. Fixes the undeclared `onnx`/`imageio-ffmpeg`/
+  `scikit-learn` dependency gap identified in `CURRENT_STATE.md` §3 by
+  putting them in a `wakeword-training` extra.
+- `src/vortex/__init__.py` — makes this an actual package, not a namespace
+  package that happens to work.
+- `src/vortex/config.py` — a typed config object (dataclass or Pydantic
+  Settings) that reads the same environment variables `main.py` currently
+  reads at import time, but as an explicit, constructable, testable object.
+  **`main.py` is not changed to use it yet in this step** — that migration
+  happens in Step 3. This step only introduces the object and proves it
+  works (via a unit test) alongside the untouched original code.
+- `legacy/main_working_baseline.py` — verbatim copy of current
+  `src/vortex/main.py`, per your rollback requirement.
+- `tests/unit/test_config.py` — first real pytest test in the repo.
+
+**Files NOT touched:** `src/vortex/main.py` itself. It keeps running exactly
+as it does today.
+
+**Exit criteria:** `pip install -e .` succeeds in a clean venv;
+`python -m src.vortex.main` still runs identically to today; `pytest
+tests/unit/test_config.py` passes; report back before Step 2.
+
+---
+
+## Step 2 — Extract configuration + logging (into the app, not just alongside it)
+
+**Goal:** `main.py` actually uses `config.py` instead of its own
+module-level `os.getenv` calls. Replace `logging.basicConfig(...)` with a
+small `observability/logging.py` setup (still a flat file for now — no
+structured logging yet, that's a later phase — just moved out of `main.py`
+and given a place to grow).
+
+**Mapping:**
+| Current (`main.py` lines, approx.) | Moves to |
+|---|---|
+| `VOICE`, `USER_NAME`, `WAKE_WORD`, `WAKE_THRESHOLD`, `BARGE_IN_THRESHOLD`, `WAKE_COOLDOWN`, `AGC_*`, `SESSION_TIMEOUT`, `MODEL`, `SYSTEM_PROMPT`, `ROOT`, `LOG_DIR` (lines 30-58) | `src/vortex/config.py` (typed `VortexConfig`, with `ROOT` replaced by `Path.home() / ".vortex"` or an explicit `VORTEX_HOME` env var, not a hardcoded drive letter) |
+| `logging.basicConfig(...)` (line 60) | `src/vortex/observability/logging.py` |
+
+**Exit criteria:** identical behavior verified by running the app and
+checking the log output looks the same; existing `pytest` suite (growing
+from Step 1) still green.
+
+---
+
+## Step 3 — Extract the voice subsystem
+
+**Goal:** pull everything audio-related out of the `Vortex` god-object into
+`src/vortex/voice/`, behind small interfaces, without changing the
+algorithms themselves (the AGC math, the chunking regex, the barge-in
+signal flow all stay exactly as validated).
+
+**Mapping:**
+| Current | Moves to |
+|---|---|
+| `_agc`, noise-floor tracking | `voice/audio.py` (an `AudioProcessor` or similar, holding `noise_floor` state) |
+| `_on_audio`, wake model loading/predict/reset, `WAKE_THRESHOLD`/`BARGE_IN_THRESHOLD`/`WAKE_COOLDOWN` logic | `voice/wake.py` |
+| `_chunk_stream`, `_synth`, `_play`, `_speak_chunks`, `speak`, `speak_stream`, `_unlink` | `voice/tts.py` |
+| `_own_mic`, `capture_command` | `voice/stt.py` |
+| `speaking`/`stop_speaking` Events and the cancellation checks scattered across TTS/LLM-streaming | `voice/barge_in.py` (a small shared cancellation-token object both TTS and the LLM provider check) |
+| `_active_session`, `_worker`'s event loop, `SESSION_TIMEOUT` | `voice/session.py` |
+
+**New seam introduced (not new behavior):** `voice/stt.py` and `voice/tts.py`
+expose a small `SpeechToText`/`TextToSpeech` interface (even if there's only
+one concrete implementation — Google Web Speech / edge-tts — today). This is
+what makes an offline engine (faster-whisper/Piper) a future *addition*,
+not a rewrite.
+
+**Exit criteria:** full manual voice-loop test (wake → command → response,
+barge-in mid-response, multi-turn session, confirmation flow) still behaves
+identically; `tools/test_barge_in.py`'s scenarios ported into
+`tests/unit/test_barge_in.py` and passing under pytest with mocked
+audio/synthesis (no real mic/speaker needed in CI).
+
+---
+
+## Step 4 — Extract the LLM provider
+
+**Goal:** isolate Ollama specifics behind a `Provider` interface so a cloud
+adapter can be added later without touching call sites.
+
+**Mapping:**
+| Current | Moves to |
+|---|---|
+| `ask_llm_stream`, `MODEL`, `SYSTEM_PROMPT`, `self.history` | `llm/provider.py` (abstract `LLMProvider.chat_stream(...)`) + `llm/ollama_provider.py` (concrete) + `llm/prompts.py` (the system prompt, pulled out as data) |
+
+**Exit criteria:** LLM fallback path (open-ended questions) still works
+identically; history still caps at last 10 turns; offline-Ollama fallback
+message still fires correctly when Ollama is down.
+
+---
+
+## Step 5 — Extract OS automation behind a platform adapter
+
+**Goal:** this is the step that actually addresses the "platform-independent
+architecture" requirement — separate *what* VORTEX wants to do
+(open an app, close a process, shut down, protect critical processes) from
+*how* Windows specifically does it.
+
+**Mapping:**
+| Current | Moves to |
+|---|---|
+| `open_target`, `native_apps`, `web_apps` | `tools/system/apps.py` (capability logic) + `platform/windows/apps.py` (the `.exe` name table, moved as-is, not redesigned) |
+| `close_named_app`, `close_all_apps`, `protected` | `tools/system/process.py` (capability logic, `psutil` calls) + `platform/windows/protected_processes.py` (the allowlist, expanded per the security-review gap in `CURRENT_STATE.md` §6, as its own reviewable file instead of an inline set literal) |
+| `system_shutdown`, `system_restart` | `platform/base.py` (`PlatformAdapter.shutdown()`/`.restart()` abstract methods) + `platform/windows/power.py` (the concrete `shutdown /s`/`/r` commands) |
+| `ROOT = r'E:\VORTEX'` | Fully removed. Replaced by `Path.home() / ".vortex"` (or `platformdirs`-style app-data directory) via `config.py`, decided in Step 1/2 already — this step just confirms nothing still reads the old hardcoded path. |
+
+**Explicitly NOT created in this step:** `platform/linux/`,
+`platform/macos/`, `platform/mobile/` — per your own rule 18 ("do not create
+empty directories purely for appearance"), these don't exist until Linux/
+macOS/mobile support is actually being built. `platform/base.py`'s abstract
+interface is what makes adding them later straightforward — the extension
+point exists; the unused implementations don't.
+
+**Exit criteria:** every OS-automation voice command (open Chrome, close
+Notepad, close all, shutdown/restart with confirmation) still works
+identically on Windows; a unit test can now instantiate the process/app
+logic with a **fake** `PlatformAdapter` and verify allowlist/confirmation
+behavior without touching real processes.
+
+---
+
+## Step 6 — Introduce the capability registry + intent router
+
+**Goal:** split `execute()`'s fused "classify + run" regex chain into two
+things: something that maps recognized text to a named capability (pure,
+testable, no side effects), and something that actually invokes it.
+
+**Mapping:**
+| Current | Moves to |
+|---|---|
+| The regex chain in `execute()` | `core/intent_router.py` (pure function: text → `Intent` value, e.g. `OpenApp(target=...)`, `CloseApp(...)`, `Shutdown`, `Unhandled(text)`) |
+| The actual dispatch (calling `open_target`, `system_shutdown`, etc.) | `core/capability_registry.py` maps each `Intent` type to the capability that handles it (which now lives in `tools/system/*` from Step 5) |
+| `awaiting_confirmation` string-flag pattern | `core/policy_engine.py` — a small, explicit "this intent requires confirmation" check, replacing the ad hoc per-branch flag, and fixing the `"yes" in cmd` substring bug flagged in `CURRENT_STATE.md` §6 with a real yes/no intent classification |
+
+**Exit criteria:** identical voice-command behavior; a new unit test
+(`test_intent_routing.py`) verifies "open chrome" → `OpenApp("chrome")`
+without ever calling `subprocess.Popen`; `test_confirmation.py` verifies the
+policy engine requires and correctly parses yes/no without the substring bug.
+
+---
+
+## Step 7 — Orchestrator + state manager
+
+**Goal:** replace the implicit state (which thread holds which flag) with an
+explicit `state_manager.py` (an enum: `STANDBY`, `ACTIVE_SESSION`,
+`SPEAKING`) and an `orchestrator.py` that's what `_worker`/`start` shrink
+down to — the thing that wires voice events → intent router → capability
+registry → policy engine → response, using the pieces built in Steps 3-6.
+
+**Exit criteria:** `main.py` (or rather, `app.py` at this point) is now
+mostly composition — "build these objects, wire them together, run" — with
+the god-object's actual logic living in the modules above. Full manual
+regression pass against the "preserve these" list.
+
+---
+
+## Step 8 — `main.py` becomes the thin bootstrap
+
+**Goal:** finally reduce `main.py` to what you specified:
+
+```python
+from vortex.app import VortexApplication
+
+def main():
+    app = VortexApplication()
+    app.start()
+
+if __name__ == "__main__":
+    main()
+```
+
+Only happens once Steps 1-7 have made this trivially true — not before.
+
+---
+
+## Step 9 — Test suite hardening
+
+By this point unit tests exist per-module (from each step above). This step
+adds:
+- `tests/integration/` — a few tests that wire multiple real modules
+  together (e.g., intent router → capability registry → fake platform
+  adapter) without mocking everything.
+- CI workflow (`.github/workflows/ci.yml`) running lint + type-check +
+  `pytest tests/unit tests/integration` on every push — explicitly
+  **excluding** anything requiring a microphone, Ollama, or a Windows GUI
+  (those get a separate, manually-triggered workflow, not blocking every PR).
+- `pytest` markers (`@pytest.mark.hardware`) on anything that does need real
+  audio/Ollama, so CI can skip them by default.
+
+## Step 10 — Feature-parity verification against the original
+
+A checklist run-through of every item in your "preserve current working
+features" list, confirmed working end-to-end on the refactored code, before
+this is considered done. Only after this passes does
+`legacy/main_working_baseline.py` stop being load-bearing (it can stay in
+the repo as a historical reference either way — no reason to delete it).
+
+---
+
+## What's deliberately deferred (not part of this refactor)
+
+Per rule 18 — architecture quality over technology count — these get
+*interfaces/extension points* where the steps above naturally create them,
+but are **not implemented** in this refactor:
+- FastAPI service layer / WebSocket API (Phase 9) — `api/` directory isn't
+  created until this is actually being built; `core/orchestrator.py`'s
+  design (Step 7) is what will make adding an API layer additive later
+  rather than requiring a rewrite.
+- Mobile client, PWA, Android/Termux/iOS support (your §7) — same
+  reasoning; no mobile-facing code is written until there's an API for it
+  to talk to.
+- RAG/memory persistence (PostgreSQL/Qdrant), Redis, Kafka, Temporal,
+  Docker/Kubernetes — none of these are needed by anything in Steps 1-10.
+  They arrive when the phase that actually needs them starts.
+
+## Sequencing note
+
+Each step above is a separate PR-sized unit of work. The plan is to do them
+one at a time, report file-by-file what changed and why after each, and get
+your explicit go-ahead before starting the next one — exactly as you asked.
+Nothing past Step 0/1-prep has been executed yet.
