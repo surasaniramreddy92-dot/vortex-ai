@@ -27,6 +27,10 @@ import edge_tts
 import ollama
 from openwakeword.model import Model
 
+from .memory import MemoryStore
+from .documents import resolve_document, extract_text, build_document_prompt
+from .browser import BrowserAgent
+
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
 ROOT = r'E:\VORTEX'
@@ -57,6 +61,10 @@ SYSTEM_PROMPT = ('You are VORTEX, a concise desktop AI assistant. You are heard,
                  'so answer in short spoken sentences and never use markdown or code blocks.')
 LOG_DIR = os.path.join(ROOT, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
+DATA_DIR = os.path.join(ROOT, 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+MEMORY_DB_PATH = os.getenv('VORTEX_MEMORY_DB', os.path.join(DATA_DIR, 'vortex_memory.db'))
+HISTORY_TURNS = 10
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 pygame.mixer.init()
 
@@ -75,7 +83,8 @@ class Vortex:
         self.recognizer = sr.Recognizer()
         self.current_pid = os.getpid()
         self.awaiting_confirmation = None
-        self.history = []
+        self.memory = MemoryStore(MEMORY_DB_PATH)
+        self.browser = BrowserAgent()
         # speaking: TTS is on air. stop_speaking: cut it off now.
         # capturing: SpeechRecognition owns the mic, so the wake stream stands down.
         self.speaking = threading.Event()
@@ -273,8 +282,8 @@ class Vortex:
     def ask_llm_stream(self, query):
         """Yield reply text as Ollama produces it, so speech can start early and
         generation stops the moment we are interrupted."""
-        self.history.append({'role': 'user', 'content': query})
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.history[-10:]
+        self.memory.add_turn('user', query)
+        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.memory.recent(HISTORY_TURNS)
         reply = ''
         try:
             stream = ollama.chat(model=MODEL, messages=messages, stream=True)
@@ -297,7 +306,52 @@ class Vortex:
             with contextlib.suppress(Exception):
                 stream.close()
             if reply:
-                self.history.append({'role': 'assistant', 'content': reply})
+                self.memory.add_turn('assistant', reply)
+
+    # ---------- documents ----------
+
+    def _stream_document_answer(self, path, question):
+        """Same streaming/barge-in-friendly pattern as ask_llm_stream, but grounded
+        in one document's text instead of conversation history."""
+        text = extract_text(path)
+        if not text.strip():
+            yield "That document appears to be empty, or I couldn't read its text."
+            return
+        messages = [
+            {'role': 'system', 'content': 'You answer questions strictly using the provided document text. '
+                                          'If the answer is not in the document, say so plainly. '
+                                          'Answer in short spoken sentences.'},
+            {'role': 'user', 'content': build_document_prompt(text, question)},
+        ]
+        try:
+            stream = ollama.chat(model=MODEL, messages=messages, stream=True)
+        except Exception as e:
+            self.log(f'Document LLM error: {e}')
+            yield 'Sorry Boss, my reasoning engine is currently offline.'
+            return
+        try:
+            for part in stream:
+                if self.stop_speaking.is_set() or not self.running:
+                    break
+                yield part['message']['content']
+        finally:
+            with contextlib.suppress(Exception):
+                stream.close()
+
+    def summarize_document(self, name):
+        path = resolve_document(name)
+        if not path:
+            self.speak(f"I couldn't find a document called {name}.")
+            return
+        self.speak(f'Reading {os.path.basename(path)}, one moment.')
+        self.speak_stream(self._stream_document_answer(path, 'summarize the document in a few sentences'))
+
+    def answer_document_question(self, name, question):
+        path = resolve_document(name)
+        if not path:
+            self.speak(f"I couldn't find a document called {name}.")
+            return
+        self.speak_stream(self._stream_document_answer(path, question))
 
     # ---------- actions ----------
 
@@ -394,6 +448,27 @@ class Vortex:
             self.awaiting_confirmation = 'shutdown'
             self.speak('Should I shut down the system now Boss?')
             return
+        # Browser commands are checked before the generic close/open/read patterns
+        # below so "close browser" / "read the page" don't get misrouted.
+        if 'close browser' in cmd or 'quit browser' in cmd:
+            self.browser.close()
+            self.speak('Closed the browser.')
+            return
+        if re.search(r"(?:read|what'?s on) (?:the |this )?page", cmd):
+            self.speak(self.browser.read_page())
+            return
+        m = re.match(r'(?:search(?: the web)? for|google) (.+)', cmd)
+        if m:
+            self.speak(self.browser.search(m.group(1).strip()))
+            return
+        m = re.match(r'(?:go to|browse to|browse) (.+)', cmd)
+        if m:
+            self.speak(self.browser.open(m.group(1).strip()))
+            return
+        m = re.match(r'click (?:on )?(.+)', cmd)
+        if m:
+            self.speak(self.browser.click_text(m.group(1).strip()))
+            return
         m = re.match(r'close (.+)', cmd)
         if m:
             self.close_named_app(m.group(1).strip())
@@ -401,6 +476,20 @@ class Vortex:
         m = re.match(r'open (.+)', cmd)
         if m:
             self.open_target(m.group(1).strip())
+            return
+        # Document commands, checked after the app-launching "open (.+)" pattern
+        # so "open chrome" still launches an app rather than looking for a file.
+        m = re.match(r'what does (.+?) say about (.+)', cmd)
+        if m:
+            self.answer_document_question(m.group(1).strip(), m.group(2).strip())
+            return
+        m = re.match(r'(?:summarize|summarise) (.+)', cmd)
+        if m:
+            self.summarize_document(m.group(1).strip())
+            return
+        m = re.match(r'read (?:me )?(.+)', cmd)
+        if m:
+            self.summarize_document(m.group(1).strip())
             return
         self.speak_stream(self.ask_llm_stream(cmd))
 
@@ -493,6 +582,10 @@ class Vortex:
             with contextlib.suppress(Exception):
                 self.stream.stop()
                 self.stream.close()
+        with contextlib.suppress(Exception):
+            self.browser.close()
+        with contextlib.suppress(Exception):
+            self.memory.close()
 
     def start(self):
         self.stream = sd.InputStream(channels=1, samplerate=16000, dtype='float32',

@@ -15,3 +15,10 @@ edge-tts==7.2.8
 ollama==0.6.2
 openwakeword==0.6.0
 onnxruntime==1.17.3
+# Phase 7: document intelligence (PDF/DOCX/XLSX text extraction)
+pymupdf==1.28.0
+python-docx==1.2.0
+openpyxl==3.1.5
+# Phase 3: browser automation. After installing, also run:
+#   python -m playwright install chromium
+playwright==1.62.0

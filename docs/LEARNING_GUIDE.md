@@ -122,6 +122,125 @@ supposed to feel like an assistant rather than a script you run and watch.
 
 ---
 
+## Phase 3 — Browser Automation & Web Interaction
+
+**The core idea:** move from "open this URL in a browser" to reliably
+performing a *sequence* of actions on a page — navigate, read, click — the
+same way a human would, but voice-triggered.
+
+**DOM and locators:** Playwright's `page.locator(...)`/`get_by_text(...)`
+find elements by matching visible text or structure rather than brittle
+pixel coordinates or auto-generated class names — this is what lets "click
+sign in" work regardless of exactly where that button is laid out on the
+page.
+
+**Why the browser is visible, not headless:** `BrowserAgent` launches
+Chromium with `headless=False` on purpose. This is a personal assistant
+meant to be watched acting on your behalf, not a silent background scraper —
+seeing the page actually navigate when you say "go to github.com" is part of
+the point.
+
+**The Google bot-detection story (a genuinely useful thing to understand,
+not just a workaround):** the first version of `search()` queried Google
+directly and parsed `#search h3` results. In practice, Google served the
+automated browser its "unusual traffic detected" bot-check page almost
+immediately — verified directly by inspecting the response (`page.url`
+redirected to `google.com/sorry/index`, the body was literally the bot-check
+copy). The fix was **not** to add stealth plugins or fingerprint spoofing to
+get past that — doing so would mean deliberately bypassing an anti-abuse
+mechanism, which is explicitly off-limits (both in this project's own
+blueprint and more broadly). The actual fix: switch to
+`html.duckduckgo.com`, a simple, server-rendered results page designed to be
+lightweight, that returns clean results with no bot wall for a normal,
+low-volume, single query. **The lesson generalizes:** when automation hits a
+site's anti-bot defense, the correct engineering response is "use a
+different, compliant path to the same information," not "defeat the
+defense" — this is the same non-negotiable boundary the Career/Job-Discovery
+phases (11-12) call out explicitly around CAPTCHA and MFA.
+
+**Lazy initialization:** the browser only launches on first actual use
+(`_ensure_started()`), not at VORTEX startup — no reason to pay Chromium's
+startup cost and hold a browser process open for a session that never
+touches the web.
+
+---
+
+## Phase 5 — Memory (persistent conversation history, scoped v1)
+
+**The core idea, scoped honestly:** the full Phase 5 in the master
+blueprint is production RAG — PostgreSQL for transactional data, Qdrant for
+vector retrieval, embeddings, hybrid search, reranking, provenance. None of
+that exists yet. What *does* exist now is a much narrower, concrete fix: the
+conversation history that used to vanish every time the process restarted
+now survives, via a plain SQLite database.
+
+**Why SQLite, not a "real" database, for this:** SQLite is a single file, no
+server process, no configuration, built into Python's standard library
+(`sqlite3`) — for "persist a list of conversation turns for one desktop
+user," a client-server database would be pure overhead with zero benefit.
+This is the same "don't reach for infrastructure a problem doesn't need
+yet" principle that defers Postgres/Qdrant/Kafka/Temporal elsewhere in this
+project — matching the tool to the actual scale of the problem.
+
+**How it's wired in:** `MemoryStore.add_turn(role, content)` writes a row;
+`.recent(n)` reads the last `n` turns back out, oldest-first, in exactly the
+`{'role', 'content'}` shape Ollama's `messages` list expects — so
+`ask_llm_stream` barely changed at all, it just reads/writes through the
+store instead of a Python list. `threading.Lock` guards the shared
+connection since multiple threads (the worker thread executing commands,
+potential future callers) could touch it.
+
+**What this is explicitly not:** there's no retrieval here — VORTEX doesn't
+search *which* past conversations are relevant to a new question, it just
+remembers the last 10 turns, in order, exactly as the in-RAM list did
+before. Real RAG (semantic search over a knowledge base) is still fully
+ahead, in the full Phase 5 build-out.
+
+---
+
+## Phase 7 — Document Intelligence (read/summarize/QA, scoped v1)
+
+**The core idea, scoped honestly:** the full blueprint phase includes
+layout-aware extraction with page/table provenance, OCR fallback for
+scanned documents, and feeding parsed documents into a RAG ingestion
+pipeline for long-term retrieval. What's built now is the concrete slice
+that's useful immediately: "read this PDF/DOCX/XLSX aloud" and "answer a
+question about this specific document," for one file at a time.
+
+**Format-specific extraction, one adapter per type:** `extract_text()`
+dispatches on file extension — PyMuPDF (imported as `fitz`) for PDFs,
+`python-docx` for `.docx` paragraphs, `openpyxl` for spreadsheet cells (each
+row joined with `|` so tabular structure survives as plain text well enough
+for an LLM to reason about it). There's no universal document parser
+because there's no universal document — each format has a genuinely
+different internal model, so each gets its own small adapter, normalized to
+one plain-text output.
+
+**Truncation, not chunking:** extracted text is capped at `MAX_CHARS`
+(12,000) before being handed to the LLM. This is a real, named limitation,
+not chunking/embedding-based retrieval — `llama3.2:1b`'s context window is
+small, so a long document simply gets cut off rather than intelligently
+summarized-then-retrieved-in-parts. Fine for a resume or a short report;
+would silently drop information from a 50-page document. The proper fix
+(chunk + embed + retrieve only the relevant passages) is exactly Phase 5's
+full RAG scope, not duplicated here in miniature.
+
+**Filename resolution as its own small problem:** `resolve_document(name)`
+searches Desktop/Documents/Downloads for a file whose name or stem matches
+what was said, preferring an exact match and falling back to the most
+recently modified candidate — because voice input gives you "my resume,"
+not a full file path, and something has to bridge that gap.
+
+**Reused the same streaming/barge-in pattern as chat, deliberately:**
+`_stream_document_answer` is structurally identical to `ask_llm_stream` —
+same `stream=True` Ollama call, same `stop_speaking` check per token. A
+document summary can take a while to generate; interrupting it mid-sentence
+had to work exactly the same way interrupting a normal answer does, so the
+existing pattern was reused rather than inventing a second, less-consistent
+cancellation mechanism.
+
+---
+
 ## Phase 4 — LLM Brain, Tool Calling & Hybrid Intent Routing
 
 **The core idea:** an LLM is a powerful, unreliable-in-detail reasoning

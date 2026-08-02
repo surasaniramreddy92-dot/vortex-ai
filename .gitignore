@@ -13,6 +13,9 @@ __pycache__/
 # Runtime logs
 logs/*.log
 
+# Persistent conversation memory - contains real conversation transcripts
+data/
+
 # Regeneratable synthetic training audio (34MB+, rebuilt by build_hey_vortex.py)
 tools/wakeword/cache/
 
