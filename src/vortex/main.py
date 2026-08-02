@@ -449,6 +449,12 @@ class Vortex:
         self.speak('Restarting the system now Boss.')
         subprocess.Popen('shutdown /r /t 5', shell=True)
 
+    def lock_system(self):
+        # No confirmation needed, unlike shutdown/restart/close-all: locking is
+        # trivially reversible (just log back in) and loses no unsaved work.
+        self.speak('Locking the system now Boss.')
+        subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
+
     def handle_confirmation(self, cmd):
         if not self.awaiting_confirmation:
             return False
@@ -490,6 +496,9 @@ class Vortex:
         if 'shutdown system' in cmd:
             self.awaiting_confirmation = 'shutdown'
             self.speak('Should I shut down the system now Boss?')
+            return
+        if re.search(r'\block\b.*\b(?:system|computer|screen|pc)\b', cmd):
+            self.lock_system()
             return
         # Browser commands are checked before the generic close/open/read patterns
         # below so "close browser" / "read the page" don't get misrouted.
@@ -600,8 +609,11 @@ class Vortex:
                 # Speech is already cut. Drop any pending prompt and take the new order.
                 self.log('Barge-in: yielding the floor')
                 self.awaiting_confirmation = None
-            else:
-                self.speak('Yes Boss?')
+            # Always spoken, for both a fresh wake and a barge-in: cutting off
+            # mid-sentence with total silence gave no audible confirmation that
+            # the interruption actually registered - hearing "Yes Boss?" right
+            # after the cutoff is the confirmation.
+            self.speak('Yes Boss?')
             self._active_session()
 
     def request_stop_speaking(self, icon=None, item=None):
@@ -612,12 +624,18 @@ class Vortex:
         self.events.put('barge_in')
 
     def stop(self, icon=None, item=None):
+        """The single shutdown path - used by both the "shutdown vortex" voice
+        command and the tray's Exit item. Must stop the tray icon itself, or
+        icon.run() (blocking the main thread in start()) never returns and the
+        process lingers as a zombie: no longer listening or responding, but
+        never actually exiting."""
         self.running = False
         self.stop_speaking.set()
+        if self.icon is not None:
+            self.icon.stop()
 
     def tray_exit(self, icon, item):
         self.stop()
-        icon.stop()
 
     def tray_icon(self):
         img = Image.new('RGB', (64,64), 'black')

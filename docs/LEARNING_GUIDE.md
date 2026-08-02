@@ -120,6 +120,22 @@ icon rather than a foreground console window is what lets VORTEX be "always
 available" without stealing focus — this is table stakes for anything that's
 supposed to feel like an assistant rather than a script you run and watch.
 
+**A real "it looks stopped but isn't" bug:** `pystray.Icon.run()` is a
+*blocking* call that owns the main thread for as long as the tray icon
+exists — nothing after it in `start()` executes until the icon actually
+stops. The voice command "shutdown vortex" set `self.running = False` (which
+correctly stops the audio callback and the worker thread) but never told the
+icon itself to stop. The result: the process didn't crash, and it stopped
+*doing* anything, but it never actually exited — a zombie, kept alive purely
+by one blocking call nothing had told to return. The fix was to make
+`stop()` the single shutdown path for both the voice command and the tray's
+own Exit menu item, and have it call `self.icon.stop()` too. The general
+lesson: whenever a component blocks the thread that started it (a GUI event
+loop, a tray icon, a web server's `serve_forever()`), "stop everything else"
+and "stop *this*" are two different actions, and forgetting the second one
+produces a process that looks dead by every symptom except the one that
+actually matters — whether it exited.
+
 ---
 
 ## Phase 3 — Browser Automation & Web Interaction
@@ -446,6 +462,18 @@ usability tax. VORTEX's `_active_session()` loop keeps listening for a
 configurable inactivity window after any wake event, so a whole multi-turn
 exchange (and any confirmation within it) happens without re-summoning the
 assistant.
+
+**Feedback has to be symmetric across event types, not just correct for the
+common one.** A fresh standby wake spoke "Yes Boss?" so you'd know it heard
+you; a barge-in originally didn't - it just cut the current sentence off
+into silence and started listening. Functionally that was fine (the
+interruption genuinely worked), but from the user's side, "did that just
+work, or did it just... stop?" is a real, valid question with no way to
+answer it by ear alone. The fix was simple (speak "Yes Boss?" after *either*
+event type), but the underlying principle is worth generalizing: whenever a
+system has two ways of reaching the same state, it's easy to build and test
+the common path's feedback carefully and forget the less common path needs
+the same feedback, not different (or absent) feedback.
 
 ---
 

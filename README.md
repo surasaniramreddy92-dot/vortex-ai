@@ -42,6 +42,7 @@ phase by phase, in its own commit batch.
   "what time is it" / "what's the date"    - deterministic, no LLM
   "close all applications"                 - asks for confirmation first
   "shutdown system" / "restart system"     - asks for confirmation first
+  "lock the system"                        - immediate, no confirmation (reversible)
   "search for openai"                      - browses, reads back top results
   "go to github.com"                       - navigates there (visible browser)
   "play some badminton highlights on youtube" - searches YouTube, plays the first result
