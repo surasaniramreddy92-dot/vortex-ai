@@ -34,16 +34,21 @@ VOICE = os.getenv('VORTEX_VOICE', 'en-US-AvaMultilingualNeural')
 USER_NAME = os.getenv('USER_NAME', 'Boss')
 # Custom-trained model (tools/wakeword/build_hey_vortex.py) so the phrase matches the assistant's name.
 WAKE_WORD = os.getenv('VORTEX_WAKE_WORD', os.path.join(ROOT, 'tools', 'wakeword', 'models', 'hey_vortex.onnx'))
-# Calibrated against held-out synthetic clips (tools/wakeword/validate_hey_vortex.py):
-# 0.7 catches every natural "Hey Vortex" rendition with zero false positives across 36 confusable phrases.
-WAKE_THRESHOLD = float(os.getenv('VORTEX_WAKE_THRESHOLD', '0.7'))
+# Calibrated against held-out synthetic clips (tools/wakeword/validate_hey_vortex.py),
+# which only covers clean TTS audio, not real mic/room noise - raised from 0.7 after
+# real-world false activations (background noise, amplified by AGC, crossing 0.7).
+WAKE_THRESHOLD = float(os.getenv('VORTEX_WAKE_THRESHOLD', '0.8'))
 # Barge-in uses a stricter threshold still: the mic also hears our own speakers.
-BARGE_IN_THRESHOLD = float(os.getenv('VORTEX_BARGE_IN_THRESHOLD', '0.85'))
+BARGE_IN_THRESHOLD = float(os.getenv('VORTEX_BARGE_IN_THRESHOLD', '0.9'))
 WAKE_COOLDOWN = 1.5
 # Laptop mics are quiet by default; boost normal speaking volume up to a target
-# level before wake-word inference so you don't have to raise your voice.
+# level before wake-word inference so you don't have to raise your voice. Gated
+# against a rolling ambient-noise-floor estimate so steady background noise
+# doesn't get amplified into a false trigger - only signal that stands out
+# above the floor (a real voice-like transient) gets boosted.
 AGC_TARGET_RMS = float(os.getenv('VORTEX_AGC_TARGET_RMS', '3500'))
-AGC_MAX_GAIN = float(os.getenv('VORTEX_AGC_MAX_GAIN', '8.0'))
+AGC_MAX_GAIN = float(os.getenv('VORTEX_AGC_MAX_GAIN', '4.0'))
+AGC_NOISE_MARGIN = float(os.getenv('VORTEX_AGC_NOISE_MARGIN', '1.6'))
 # How long an active session stays open for follow-ups (confirmations, next
 # command) before requiring the wake word again.
 SESSION_TIMEOUT = float(os.getenv('VORTEX_SESSION_TIMEOUT', '18'))
@@ -78,6 +83,7 @@ class Vortex:
         self.capturing = threading.Event()
         self.events = queue.Queue()
         self.last_wake = 0.0
+        self.noise_floor = 250.0
         self.wake_model = Model(wakeword_models=[WAKE_WORD], inference_framework='onnx')
         self.protected = {
             'python.exe','pythonw.exe','ollama.exe','explorer.exe','winlogon.exe','csrss.exe',
@@ -98,12 +104,14 @@ class Vortex:
     def log(self, msg):
         logging.info(msg)
 
-    @staticmethod
-    def _agc(audio_i16):
-        """Boost quiet audio toward a target RMS before wake-word inference.
-        Skips near-silence so it doesn't amplify noise into a false trigger."""
+    def _agc(self, audio_i16):
+        """Boost voice-level audio toward a target RMS before wake-word inference.
+        Tracks a slow-moving ambient noise floor and only boosts frames that stand
+        out above it - steady background noise gets left alone (and folded into
+        the floor estimate) instead of amplified into a false wake trigger."""
         rms = np.sqrt(np.mean(audio_i16.astype(np.float64) ** 2))
-        if rms < 40:
+        if rms < self.noise_floor * AGC_NOISE_MARGIN:
+            self.noise_floor = 0.98 * self.noise_floor + 0.02 * rms
             return audio_i16
         gain = min(AGC_MAX_GAIN, AGC_TARGET_RMS / rms)
         if gain <= 1.0:
@@ -414,6 +422,7 @@ class Vortex:
             return
         self.last_wake = now
         self.wake_model.reset()
+        self.log(f'{"Barge-in" if speaking else "Wake"} triggered: score={score:.3f} noise_floor={self.noise_floor:.0f}')
         if speaking:
             # Cut the audio here, on the spot; the worker picks up the new command.
             self.stop_speaking.set()
