@@ -12,8 +12,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.parse
-import webbrowser
 
 import numpy as np
 import psutil
@@ -396,6 +394,12 @@ class Vortex:
     # ---------- actions ----------
 
     def open_target(self, target):
+        """Native apps launch locally. Anything web-related routes through the
+        one Playwright-controlled browser (self.browser) instead of the system's
+        default browser, so there's a single consistent, automatable browser
+        session rather than two different ones depending which path fires -
+        and so an unmatched multi-word phrase gets an actual web search with
+        results read back, not a silent literal-phrase Google search window."""
         target = target.lower().strip()
         if target in self.native_apps:
             try:
@@ -404,11 +408,10 @@ class Vortex:
                 return True
             except OSError: pass
         if target in self.web_apps:
-            webbrowser.open(self.web_apps[target])
+            self.browser.open(self.web_apps[target])
             self.speak(f'Opening {target}.')
             return True
-        webbrowser.open(f'https://www.google.com/search?q={urllib.parse.quote(target)}')
-        self.speak(f"I couldn't find {target} installed. Opening it in browser.")
+        self.speak(self.browser.open(target))
         return True
 
     def close_named_app(self, target):
@@ -496,6 +499,15 @@ class Vortex:
             return
         if re.search(r"(?:read|what'?s on) (?:the |this )?page", cmd):
             self.speak(self.browser.read_page())
+            return
+        # YouTube search-and-play is checked before the generic "open (.+)" pattern
+        # below, which used to swallow phrases like "open youtube and play X" whole
+        # and fall through to a dumb literal-phrase web search (see IMPLEMENTED.md).
+        m = (re.match(r'(?:open |go to )?youtube(?: and)? (?:play|search for|find|watch) (.+)', cmd)
+             or re.match(r'play (.+) on youtube', cmd)
+             or re.match(r'search youtube for (.+)', cmd))
+        if m:
+            self.speak(self.browser.play_youtube(m.group(1).strip()))
             return
         m = re.match(r'(?:search(?: the web)? for|google) (.+)', cmd)
         if m:

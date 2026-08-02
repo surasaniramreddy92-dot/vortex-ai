@@ -69,6 +69,22 @@ class BrowserAgent:
         except Exception as e:
             return f"The search for {query} didn't go through: {e}"
 
+    def play_youtube(self, query):
+        """Search YouTube directly and click the first actual video result, so
+        "play X on youtube" plays a video instead of the old, wrong behavior of
+        opening a plain Google search of the literal phrase in the system's
+        default browser (see IMPLEMENTED.md for that bug)."""
+        try:
+            self._ensure_started()
+            self._page.goto(f'https://www.youtube.com/results?search_query={query}',
+                            wait_until='domcontentloaded', timeout=15000)
+            video = self._page.locator('a#video-title').first
+            title = video.inner_text(timeout=8000)
+            video.click(timeout=8000)
+            return f'Playing {title}.'
+        except Exception as e:
+            return f"I couldn't find a video for {query} on YouTube: {e}"
+
     def read_page(self):
         if self._page is None:
             return "There's no page open yet."

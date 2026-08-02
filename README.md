@@ -44,6 +44,7 @@ phase by phase, in its own commit batch.
   "shutdown system" / "restart system"     - asks for confirmation first
   "search for openai"                      - browses, reads back top results
   "go to github.com"                       - navigates there (visible browser)
+  "play some badminton highlights on youtube" - searches YouTube, plays the first result
   "click sign in"                          - clicks matching visible text
   "read the page"                          - reads back the open page's text
   "summarize my resume"                    - finds + summarizes a document (whole-document)

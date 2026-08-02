@@ -163,6 +163,27 @@ phases (11-12) call out explicitly around CAPTCHA and MFA.
 startup cost and hold a browser process open for a session that never
 touches the web.
 
+**A second real bug, worth understanding rather than just noting as fixed:**
+"open youtube and play some badminton tournament" was, for a while, silently
+swallowed whole by the *old* app-launcher's generic `open (.+)` regex — not
+by anything in `browser.py`. `open_target()` checked whether the entire
+phrase was a known app or an exact `web_apps` dictionary key (it wasn't —
+the dictionary only has the bare word `"youtube"`, not a sentence containing
+it), found nothing, and fell back to opening a literal Google search of the
+whole phrase in the *system's default browser* — a second, uncontrolled
+browser window entirely separate from the Playwright one, with no click, no
+video, and no spoken feedback about what actually happened. Two lessons:
+first, a regex that matches too broadly (`open (.+)` matches almost
+anything) needs a fallback that's actually good, because it *will* end up
+handling inputs nobody designed it for. Second, once a project has one
+properly controlled, automatable browser session, *every* web-opening code
+path should route through it — having two different browsers fire depending
+on which regex happened to match is confusing and much harder to reason
+about than "the browser" always meaning one specific, observable thing. The
+fix added an explicit YouTube search-and-click-first-result action ahead of
+the generic fallback, and made the fallback itself route through the same
+`BrowserAgent` instead of the system browser.
+
 ---
 
 ## Phase 5 — Memory & RAG (conversation history + real document retrieval)
