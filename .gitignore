@@ -19,5 +19,12 @@ data/
 # Regeneratable synthetic training audio (34MB+, rebuilt by build_hey_vortex.py)
 tools/wakeword/cache/
 
+# Qdrant binary (84MB, downloaded by the setup steps in README) and its local
+# vector storage (contains embedded content from your own documents)
+tools/qdrant/qdrant.exe
+tools/qdrant/storage/
+tools/qdrant/snapshots/
+tools/qdrant/.qdrant-initialized
+
 # Empty placeholder directory, not part of the source tree
 /models/

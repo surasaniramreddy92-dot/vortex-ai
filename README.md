@@ -46,8 +46,8 @@ phase by phase, in its own commit batch.
   "go to github.com"                       - navigates there (visible browser)
   "click sign in"                          - clicks matching visible text
   "read the page"                          - reads back the open page's text
-  "summarize my resume"                    - finds + summarizes a document
-  "what does budget.xlsx say about Q3"     - answers from a document's contents
+  "summarize my resume"                    - finds + summarizes a document (whole-document)
+  "what does budget.xlsx say about Q3"     - RAG-retrieved answer from a document's contents
   "explain how Java works"                 - falls back to the local LLM
 ```
 
@@ -55,10 +55,15 @@ phase by phase, in its own commit batch.
 
 Prerequisites:
 - Windows, Python 3.11
-- [Ollama](https://ollama.com) running locally with `llama3.2:1b` pulled
+- [Ollama](https://ollama.com) running locally with `llama3.2:1b` and
+  `nomic-embed-text` pulled (`ollama pull llama3.2:1b`, `ollama pull nomic-embed-text`)
 - A working microphone and speakers
 - Internet access (STT and TTS are both cloud calls today — see
   [IMPLEMENTED.md](IMPLEMENTED.md) for why that's a gap, not a design choice)
+- **Optional but recommended:** PostgreSQL + Qdrant running locally, for the
+  RAG-backed document Q&A path (see below). VORTEX starts and runs fine
+  without them — document Q&A just falls back to the older truncated-
+  whole-document approach if they're not reachable.
 
 ```powershell
 python -m venv venv
@@ -66,6 +71,33 @@ venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m src.vortex.main
 ```
+
+### Setting up the RAG stack (PostgreSQL + Qdrant)
+
+Both run as native Windows services/binaries here — no Docker required
+(Docker Desktop needs WSL2, which needs admin rights and usually a reboot;
+this avoids that entirely).
+
+```powershell
+# PostgreSQL 17
+winget install --id PostgreSQL.PostgreSQL.17 -e
+
+# Create a dedicated database + role (don't use the postgres superuser directly)
+$env:PGPASSWORD = "postgres"  # or whatever password the installer set
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -h localhost -c "CREATE USER vortex WITH PASSWORD 'vortex_local_dev';"
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -h localhost -c "CREATE DATABASE vortex OWNER vortex;"
+
+# Qdrant - download the native Windows binary and run it (no install needed)
+# (see https://github.com/qdrant/qdrant/releases for the latest version)
+mkdir tools\qdrant
+Invoke-WebRequest -Uri "https://github.com/qdrant/qdrant/releases/latest/download/qdrant-x86_64-pc-windows-msvc.zip" -OutFile tools\qdrant\qdrant.zip
+Expand-Archive tools\qdrant\qdrant.zip tools\qdrant -Force
+cd tools\qdrant; .\qdrant.exe   # leave this running in its own window
+```
+
+Then set `VORTEX_POSTGRES_DSN` and `VORTEX_QDRANT_URL` in `.env` (see
+`.env.example` for the shape) to match. VORTEX's RAG schema and Qdrant
+collection are created automatically on first run — no manual migration step.
 
 Say **"Hey Vortex"**, wait for "Yes Boss?", then speak a command. Follow-up
 commands and yes/no confirmations don't need the wake word repeated — the
@@ -87,6 +119,9 @@ While VORTEX is talking, saying "Hey Vortex" again cuts it off mid-sentence
 | `VORTEX_AGC_TARGET_RMS` / `VORTEX_AGC_MAX_GAIN` / `VORTEX_AGC_NOISE_MARGIN` | `3500` / `4.0` / `1.6` | automatic gain control on the wake audio path: boosts speech-level audio toward the target RMS, but only for frames that stand out `NOISE_MARGIN`x above a tracked ambient noise floor, so steady background noise doesn't get amplified into a false wake trigger |
 | `VORTEX_SESSION_TIMEOUT` | `18` | seconds of silence before an active session returns to standby |
 | `VORTEX_MEMORY_DB` | `data/vortex_memory.db` | SQLite database conversation history persists to |
+| `VORTEX_POSTGRES_DSN` | `dbname=vortex user=vortex password=... host=localhost` | Postgres connection string for document/chunk metadata (RAG) |
+| `VORTEX_QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint for vector search (RAG) |
+| `VORTEX_EMBED_MODEL` | `nomic-embed-text` | local Ollama embedding model used to vectorize document chunks and questions |
 
 ## Architecture today
 
@@ -99,25 +134,35 @@ Microphone
        -> regex router: deterministic command? -> execute directly
                           |                        (apps/processes, browser via
                           |                         Playwright, documents via
-                          |                         PyMuPDF/python-docx/openpyxl)
+                          |                         PyMuPDF/python-docx/openpyxl,
+                          |                         RAG-backed Q&A via Postgres+Qdrant)
                           otherwise -> Ollama (llama3.2:1b, streamed)
   -> response text -> sentence-chunked -> edge-tts -> pygame playback
        (each chunk synthesized ahead of playback; stop_speaking event
         can cut it off between chunks or mid-chunk)
   -> conversation turns persisted to SQLite (survives restarts)
+
+Document Q&A specifically:
+  file -> extract_text() -> chunk (800 chars, 100 overlap)
+       -> embed each chunk (nomic-embed-text via Ollama)
+       -> Postgres (chunk text + metadata, source of truth)
+       -> Qdrant (vectors, indexed by document_id)
+  question -> embed -> Qdrant similarity search (top 5, filtered to that document)
+           -> only the relevant chunks -> Ollama (streamed) -> spoken answer
 ```
 
 The orchestration/voice/OS-automation logic still lives in
 [src/vortex/main.py](src/vortex/main.py) as one class — see
 [IMPLEMENTED.md](IMPLEMENTED.md) Phase 0 for why that's the biggest
 near-term debt, and [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md) for the
-planned (not yet started) modularization. The three newest capabilities are
-at least already separate, composed modules rather than more methods on the
+planned (not yet started) modularization. The newer capabilities are at
+least already separate, composed modules rather than more methods on the
 same class:
 
 - [src/vortex/memory.py](src/vortex/memory.py) — SQLite-backed conversation history
 - [src/vortex/documents.py](src/vortex/documents.py) — PDF/DOCX/XLSX/text reading
 - [src/vortex/browser.py](src/vortex/browser.py) — Playwright-driven navigation/search/click
+- [src/vortex/rag.py](src/vortex/rag.py) — chunking/embedding/Postgres+Qdrant retrieval for document Q&A
 
 ## The wake-word training pipeline
 
@@ -148,11 +193,16 @@ instead of only synthetic ones.
   conditions are reduced (noise-floor-aware AGC, raised thresholds) but not
   eliminated. Every trigger now logs its score and noise floor, so further
   tuning is data-driven rather than guesswork.
-- Conversation memory persists across restarts (SQLite), but it's plain
-  history, not retrieval — no embeddings, no document/knowledge corpus (that
-  fuller scope is still Phase 5's RAG work).
-- Document reading is whole-file-in-context, not chunked/indexed — fine for
-  one document at a time, not a corpus.
+- Conversation memory persists across restarts (SQLite), but it's still
+  plain chronological history, not retrieval — the Postgres+Qdrant RAG stack
+  is used for document Q&A only, not (yet) for searching past conversations.
+- Document *question-answering* uses real chunking/embedding/retrieval
+  (Postgres+Qdrant); document *summarization* still truncates the whole file
+  — summarizing wants the whole document, not similarity-retrieved snippets,
+  so retrieval doesn't apply there the same way.
+- The RAG stack requires PostgreSQL and Qdrant running locally as separate
+  processes (see Quickstart) — VORTEX degrades gracefully to the old
+  truncated approach if they're not reachable, rather than failing to start.
 - Browser search uses DuckDuckGo, not Google — Google serves an automated
   browser a bot-detection page almost immediately, and working around that
   would mean bypassing an anti-abuse mechanism.

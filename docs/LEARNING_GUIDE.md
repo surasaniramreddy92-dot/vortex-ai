@@ -165,47 +165,116 @@ touches the web.
 
 ---
 
-## Phase 5 — Memory (persistent conversation history, scoped v1)
+## Phase 5 — Memory & RAG (conversation history + real document retrieval)
 
-**The core idea, scoped honestly:** the full Phase 5 in the master
-blueprint is production RAG — PostgreSQL for transactional data, Qdrant for
-vector retrieval, embeddings, hybrid search, reranking, provenance. None of
-that exists yet. What *does* exist now is a much narrower, concrete fix: the
-conversation history that used to vanish every time the process restarted
-now survives, via a plain SQLite database.
+This phase ended up in two genuinely different pieces, built at different
+times, and it's worth understanding why they're separate rather than one
+system.
 
-**Why SQLite, not a "real" database, for this:** SQLite is a single file, no
-server process, no configuration, built into Python's standard library
-(`sqlite3`) — for "persist a list of conversation turns for one desktop
-user," a client-server database would be pure overhead with zero benefit.
-This is the same "don't reach for infrastructure a problem doesn't need
-yet" principle that defers Postgres/Qdrant/Kafka/Temporal elsewhere in this
-project — matching the tool to the actual scale of the problem.
+### Part 1: conversation memory (SQLite)
 
-**How it's wired in:** `MemoryStore.add_turn(role, content)` writes a row;
-`.recent(n)` reads the last `n` turns back out, oldest-first, in exactly the
+**Why SQLite, not a client-server database, for this:** SQLite is a single
+file, no server process, no configuration, built into Python's standard
+library (`sqlite3`) — for "persist a list of conversation turns for one
+desktop user," a client-server database would be pure overhead with zero
+benefit. `MemoryStore.add_turn(role, content)` writes a row; `.recent(n)`
+reads the last `n` turns back out, oldest-first, in exactly the
 `{'role', 'content'}` shape Ollama's `messages` list expects — so
-`ask_llm_stream` barely changed at all, it just reads/writes through the
-store instead of a Python list. `threading.Lock` guards the shared
-connection since multiple threads (the worker thread executing commands,
-potential future callers) could touch it.
+`ask_llm_stream` barely changed, it just reads/writes through the store
+instead of a Python list. This is plain chronological recall, not
+retrieval — there's no search over *which* past turns are relevant to a new
+question.
 
-**What this is explicitly not:** there's no retrieval here — VORTEX doesn't
-search *which* past conversations are relevant to a new question, it just
-remembers the last 10 turns, in order, exactly as the in-RAM list did
-before. Real RAG (semantic search over a knowledge base) is still fully
-ahead, in the full Phase 5 build-out.
+### Part 2: document RAG (PostgreSQL + Qdrant, the "full production stack")
+
+**Why this got a real client-server stack when conversation memory didn't:**
+because there was an actual, evidenced problem it solves. Document Q&A
+originally worked by extracting a document's full text, truncating it to
+12,000 characters, and stuffing whatever was left into the prompt — a real,
+named limitation (a 50-page document would silently lose everything past
+the cutoff). Fixing that properly means: don't send the whole document,
+send *only the parts relevant to the question*. That's what retrieval is
+for, and it's what justified adding real infrastructure rather than another
+SQLite file.
+
+**Embeddings and cosine similarity, concretely:** an embedding model turns a
+piece of text into a fixed-length vector (here, 768 numbers, from
+`nomic-embed-text` running locally via Ollama) such that semantically
+similar text produces vectors that point in a similar direction. "Similar
+direction" is measured by cosine similarity — the cosine of the angle
+between two vectors, 1.0 for identical direction, 0 for unrelated, negative
+for opposite. This is what lets a question like "what course did they
+complete?" retrieve a chunk containing "successfully completed Getting
+Started with Amazon S3" even though the words barely overlap — the model
+learned that those phrases mean related things.
+
+**Chunking is a real design decision, not a mechanical split:**
+`_chunk_text()` cuts text into ~800-character windows with 100 characters of
+overlap, snapped to the nearest paragraph or sentence boundary where one
+exists nearby (`text.rfind('\n\n', ...)`, then `. `, then `\n`, whichever is
+closest to the target size). Plain fixed-size slicing would cut sentences in
+half at chunk boundaries, and a lost sentence fragment at a boundary can
+mean the one fact a question needed ends up split across two chunks and
+found well in neither. The overlap exists for the same reason: a fact that
+straddles where a chunk *would* end without overlap has a second chance to
+be fully captured in the next chunk instead.
+
+**Why Postgres for one thing and Qdrant for another, not just Qdrant for
+everything:** Qdrant is excellent at "find the nearest vectors to this
+query" and mediocre at being a general-purpose durable datastore with rich
+querying, joins, and constraints. Postgres is the reverse. Here: Postgres
+holds `documents` (path, filename, a content hash) and `chunks` (the actual
+chunk text, tied to a document by foreign key) — the durable, re-derivable
+source of truth. Qdrant holds the same chunk text a second time, denormalized
+into each point's payload, purely so a retrieval query doesn't need a second
+round-trip to Postgres in the hot path. If the Qdrant collection were ever
+lost or rebuilt, Postgres has everything needed to re-embed and re-index
+without re-reading any files from disk. This is exactly the blueprint's own
+stated division of labor (relational/transactional truth in Postgres,
+vectors in Qdrant), applied at the smallest scale that still demonstrates it
+honestly — one machine, one user, not a distributed production deployment.
+
+**Content-hash-based re-ingestion:** `ensure_ingested()` hashes the extracted
+text (SHA-256) and compares it against what's stored for that path. If
+unchanged, it's a no-op — re-asking a question about the same file doesn't
+re-chunk, re-embed, and re-upsert everything from scratch every time,
+because nothing about the document changed since it was last indexed. If the
+file *has* changed, the old chunks are deleted and replaced, keyed by the
+new hash.
+
+**Filtered vector search, not global search:** `retrieve()` passes a
+`Filter(must=[FieldCondition(key='document_id', match=MatchValue(...))])`
+alongside the query vector — Qdrant only searches chunks belonging to *this*
+document, not the whole collection. Without that filter, asking about one
+document could retrieve suspiciously relevant-sounding chunks from an
+entirely different one.
+
+**Graceful degradation as a first-class design requirement, not an
+afterthought:** Postgres and Qdrant are separate local services someone has
+to actually have running — they are not guaranteed to be up the way, say,
+`sqlite3` (built into Python) always is. `RagStore()`'s construction is
+wrapped in a `try/except` in `Vortex.__init__`; if it fails, `self.rag` is
+`None` and document Q&A silently falls back to the older truncated-
+whole-document approach instead of preventing VORTEX from starting at all.
+A capability that depends on optional external infrastructure has to define
+what "infrastructure is down" looks like *before* it ships, not discover it
+the first time someone forgets to start Qdrant.
+
+**What's still not built:** hybrid dense+sparse search, reranking,
+cross-document retrieval (asking a question across your whole document
+folder at once, rather than one named file), and migrating conversation
+history onto this same stack. Each is a real, separate piece of further
+work, not implied by what exists today.
 
 ---
 
-## Phase 7 — Document Intelligence (read/summarize/QA, scoped v1)
+## Phase 7 — Document Intelligence (read/summarize/QA)
 
 **The core idea, scoped honestly:** the full blueprint phase includes
-layout-aware extraction with page/table provenance, OCR fallback for
-scanned documents, and feeding parsed documents into a RAG ingestion
-pipeline for long-term retrieval. What's built now is the concrete slice
-that's useful immediately: "read this PDF/DOCX/XLSX aloud" and "answer a
-question about this specific document," for one file at a time.
+layout-aware extraction with page/table provenance and OCR fallback for
+scanned documents. What's built now is the concrete slice that's useful
+immediately: "read this PDF/DOCX/XLSX aloud" and "answer a question about
+this specific document," for one file at a time.
 
 **Format-specific extraction, one adapter per type:** `extract_text()`
 dispatches on file extension — PyMuPDF (imported as `fitz`) for PDFs,
@@ -214,16 +283,24 @@ row joined with `|` so tabular structure survives as plain text well enough
 for an LLM to reason about it). There's no universal document parser
 because there's no universal document — each format has a genuinely
 different internal model, so each gets its own small adapter, normalized to
-one plain-text output.
+one plain-text output. It returns the *full* text, unmodified — no
+truncation happens inside this module; that's a decision left to whoever
+calls it, and the two callers now make different decisions (see below).
 
-**Truncation, not chunking:** extracted text is capped at `MAX_CHARS`
-(12,000) before being handed to the LLM. This is a real, named limitation,
-not chunking/embedding-based retrieval — `llama3.2:1b`'s context window is
-small, so a long document simply gets cut off rather than intelligently
-summarized-then-retrieved-in-parts. Fine for a resume or a short report;
-would silently drop information from a 50-page document. The proper fix
-(chunk + embed + retrieve only the relevant passages) is exactly Phase 5's
-full RAG scope, not duplicated here in miniature.
+**Two different documents-related problems, deliberately solved
+differently:** "summarize this document" and "what does this document say
+about X" sound similar but aren't. Summarization inherently wants the whole
+document — you can't summarize what you didn't read — so `summarize_document()`
+still truncates to `SUMMARY_MAX_CHARS` (12,000) and accepts the same
+named limitation as before: a long document loses information past that
+cutoff for a plain summary. Targeted questions are exactly what semantic
+retrieval is good at, so `answer_document_question()` now routes through
+Phase 5's RAG stack instead — the document gets chunked/embedded/indexed
+(once, cached by content hash) and only the chunks relevant to *this
+specific question* get sent to the LLM, regardless of how long the source
+document is. Recognizing that these are different problems, rather than
+reaching for one mechanism to force onto both, is the actual engineering
+decision here.
 
 **Filename resolution as its own small problem:** `resolve_document(name)`
 searches Desktop/Documents/Downloads for a file whose name or stem matches
@@ -317,10 +394,22 @@ long clip).
 
 **Finite-state machines for audio:** IDLE → ACTIVE/LISTENING → THINKING →
 SPEAKING, with defined transitions, is what prevents microphone/speaker race
-conditions — you don't want the app trying to listen for a wake word through
-its own TTS output at full sensitivity (VORTEX handles this with a *stricter*
-threshold while speaking, `BARGE_IN_THRESHOLD`, rather than disabling
-detection entirely, so barge-in still works).
+conditions — you don't want the app either fully deafened to its own name
+while talking (barge-in would be impossible) or exactly as sensitive as
+standby (false triggers while VORTEX's own voice plays through the speakers
+would be more likely). VORTEX distinguishes the two with a separate
+`BARGE_IN_THRESHOLD`, but **a stricter-than-standby threshold turned out to
+be the wrong instinct**: an early version set it *higher* than
+`WAKE_THRESHOLD` as a blanket "extra safety margin," which broke genuine
+interruptions instead — barge-in is inherently *harder* to score high on
+(the mic hears VORTEX's own speech at the same time as the user's voice,
+diluting the signal), and every false trigger actually observed in practice
+happened during standby, none during barge-in. Making the hardest-to-reach
+case also the highest bar was backwards; `BARGE_IN_THRESHOLD` was lowered
+below `WAKE_THRESHOLD` once the evidence (from the diagnostic logging below)
+didn't support the stricter value. The lesson: a "safety margin" added out
+of caution, without evidence, is still a guess — and guesses should be
+correctable the moment real data disagrees with them.
 
 **Concurrency and cancellation primitives:** VORTEX uses a `threading.Event`
 (`stop_speaking`) as a shared cancellation flag checked at every yield point

@@ -1,17 +1,14 @@
-"""Document intelligence (Phase 7, scoped v1).
+"""Document intelligence (Phase 7) - file resolution and text extraction.
 
 Reads PDF/DOCX/XLSX/TXT files by voice command ("read my resume", "summarize
-notes.docx", "what does budget.xlsx say about Q3") using the same local
-Ollama model VORTEX already talks to for everything else. No RAG/embeddings/
-chunked retrieval yet - documents are read in full (truncated to fit
-context) rather than indexed, which is the honest v1 scope for a personal
-assistant handling a handful of files at a time, not a document corpus.
-That fuller scope is Phase 5's RAG work, not duplicated here.
+notes.docx", "what does budget.xlsx say about Q3"). `extract_text` returns
+the FULL text - truncation (for the simple summarize path) or chunking+
+embedding (for the RAG-backed question-answering path, see rag.py) is a
+decision for the caller, not this module.
 """
 import os
 from pathlib import Path
 
-MAX_CHARS = 12000  # keeps extracted text comfortably inside llama3.2:1b's context window
 SEARCH_DIRS = [Path.home() / 'Desktop', Path.home() / 'Documents', Path.home() / 'Downloads']
 SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.xlsx', '.xls', '.txt', '.md'}
 
@@ -58,7 +55,7 @@ def extract_text(path):
     else:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()
-    return text[:MAX_CHARS]
+    return text
 
 
 def build_document_prompt(text, question):

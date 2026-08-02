@@ -89,7 +89,14 @@ src/vortex/
 │
 ├── config.py                # CREATE NOW (Step 1) - typed VortexConfig
 │
-├── memory/                  # DEFERRED - Phase 5, no persistence exists yet
+├── memory/                  # PARTIALLY SUPERSEDED - src/vortex/memory.py (SQLite
+│                             #   conversation history) and src/vortex/rag.py
+│                             #   (Postgres+Qdrant document retrieval) both exist
+│                             #   today as flat sibling modules, ahead of this
+│                             #   refactor. Folding them into memory/repository.py
+│                             #   and memory/retrieval/ is mechanical once Steps
+│                             #   1-5 actually happen - not done yet by choice
+│                             #   (refactor is still on hold, see REFACTOR_PLAN.md)
 ├── agents/                  # DEFERRED - Phase 13, single orchestrator is sufficient at this scale
 ├── workflows/               # DEFERRED - Phase 10, nothing durable-workflow-shaped exists yet
 ├── api/                     # DEFERRED - Phase 9, no HTTP/WebSocket surface yet

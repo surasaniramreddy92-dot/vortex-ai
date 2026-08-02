@@ -30,6 +30,7 @@ from openwakeword.model import Model
 from .memory import MemoryStore
 from .documents import resolve_document, extract_text, build_document_prompt
 from .browser import BrowserAgent
+from .rag import RagStore, build_rag_prompt
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
@@ -42,8 +43,13 @@ WAKE_WORD = os.getenv('VORTEX_WAKE_WORD', os.path.join(ROOT, 'tools', 'wakeword'
 # which only covers clean TTS audio, not real mic/room noise - raised from 0.7 after
 # real-world false activations (background noise, amplified by AGC, crossing 0.7).
 WAKE_THRESHOLD = float(os.getenv('VORTEX_WAKE_THRESHOLD', '0.8'))
-# Barge-in uses a stricter threshold still: the mic also hears our own speakers.
-BARGE_IN_THRESHOLD = float(os.getenv('VORTEX_BARGE_IN_THRESHOLD', '0.9'))
+# NOT stricter than WAKE_THRESHOLD, on purpose: every observed false trigger so far
+# happened in standby, none during barge-in, and barge-in is inherently *harder* to
+# score high on (the mic also hears our own speakers, diluting the user's voice) -
+# so making it a *higher* bar than standby (an earlier 0.9 attempt) just made
+# genuine interruptions fail. Revisit with real numbers from the score/noise_floor
+# diagnostic logging in _on_audio if false barge-ins actually start showing up.
+BARGE_IN_THRESHOLD = float(os.getenv('VORTEX_BARGE_IN_THRESHOLD', '0.75'))
 WAKE_COOLDOWN = 1.5
 # Laptop mics are quiet by default; boost normal speaking volume up to a target
 # level before wake-word inference so you don't have to raise your voice. Gated
@@ -65,6 +71,7 @@ DATA_DIR = os.path.join(ROOT, 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
 MEMORY_DB_PATH = os.getenv('VORTEX_MEMORY_DB', os.path.join(DATA_DIR, 'vortex_memory.db'))
 HISTORY_TURNS = 10
+SUMMARY_MAX_CHARS = 12000  # plain-summarize path only; RAG-backed Q&A doesn't need this cap
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 pygame.mixer.init()
 
@@ -85,6 +92,14 @@ class Vortex:
         self.awaiting_confirmation = None
         self.memory = MemoryStore(MEMORY_DB_PATH)
         self.browser = BrowserAgent()
+        try:
+            self.rag = RagStore()
+        except Exception as e:
+            # Postgres/Qdrant not running is a real, expected possibility (they're
+            # separate local services, not bundled with VORTEX) - degrade to the
+            # simpler truncated-document approach rather than failing to start.
+            self.log(f'RAG store unavailable, falling back to plain document reads: {e}')
+            self.rag = None
         # speaking: TTS is on air. stop_speaking: cut it off now.
         # capturing: SpeechRecognition owns the mic, so the wake stream stands down.
         self.speaking = threading.Event()
@@ -310,19 +325,10 @@ class Vortex:
 
     # ---------- documents ----------
 
-    def _stream_document_answer(self, path, question):
-        """Same streaming/barge-in-friendly pattern as ask_llm_stream, but grounded
-        in one document's text instead of conversation history."""
-        text = extract_text(path)
-        if not text.strip():
-            yield "That document appears to be empty, or I couldn't read its text."
-            return
-        messages = [
-            {'role': 'system', 'content': 'You answer questions strictly using the provided document text. '
-                                          'If the answer is not in the document, say so plainly. '
-                                          'Answer in short spoken sentences.'},
-            {'role': 'user', 'content': build_document_prompt(text, question)},
-        ]
+    def _stream_llm_answer(self, system_prompt, user_content):
+        """Shared streaming/barge-in-friendly pattern: one system+user message
+        in, tokens out, stoppable mid-generation exactly like ask_llm_stream."""
+        messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_content}]
         try:
             stream = ollama.chat(model=MODEL, messages=messages, stream=True)
         except Exception as e:
@@ -339,19 +345,53 @@ class Vortex:
                 stream.close()
 
     def summarize_document(self, name):
+        """Whole-document (truncated) summary - summarization wants the whole
+        document, not similarity-retrieved snippets, so this doesn't use RAG."""
         path = resolve_document(name)
         if not path:
             self.speak(f"I couldn't find a document called {name}.")
             return
         self.speak(f'Reading {os.path.basename(path)}, one moment.')
-        self.speak_stream(self._stream_document_answer(path, 'summarize the document in a few sentences'))
+        text = extract_text(path)
+        if not text.strip():
+            self.speak("That document appears to be empty, or I couldn't read its text.")
+            return
+        prompt = build_document_prompt(text[:SUMMARY_MAX_CHARS], 'summarize the document in a few sentences')
+        self.speak_stream(self._stream_llm_answer(
+            'You answer questions strictly using the provided document text. '
+            'If the answer is not in the document, say so plainly. Answer in short spoken sentences.',
+            prompt))
 
     def answer_document_question(self, name, question):
+        """Targeted questions retrieve only the relevant chunks via RagStore,
+        so a long document doesn't silently lose everything past a truncation
+        cutoff. Falls back to the old truncated-whole-document approach if
+        Postgres/Qdrant aren't running."""
         path = resolve_document(name)
         if not path:
             self.speak(f"I couldn't find a document called {name}.")
             return
-        self.speak_stream(self._stream_document_answer(path, question))
+        text = extract_text(path)
+        if not text.strip():
+            self.speak("That document appears to be empty, or I couldn't read its text.")
+            return
+        if self.rag is not None:
+            try:
+                doc_id = self.rag.ensure_ingested(path, text)
+                chunks = self.rag.retrieve(doc_id, question)
+                if chunks:
+                    prompt = build_rag_prompt(chunks, question)
+                    self.speak_stream(self._stream_llm_answer(
+                        'Answer strictly using the provided excerpts. If they do not contain '
+                        'the answer, say so plainly. Answer in short spoken sentences.', prompt))
+                    return
+            except Exception as e:
+                self.log(f'RAG retrieval failed, falling back to plain document read: {e}')
+        prompt = build_document_prompt(text[:SUMMARY_MAX_CHARS], question)
+        self.speak_stream(self._stream_llm_answer(
+            'You answer questions strictly using the provided document text. '
+            'If the answer is not in the document, say so plainly. Answer in short spoken sentences.',
+            prompt))
 
     # ---------- actions ----------
 
@@ -586,6 +626,9 @@ class Vortex:
             self.browser.close()
         with contextlib.suppress(Exception):
             self.memory.close()
+        if self.rag is not None:
+            with contextlib.suppress(Exception):
+                self.rag.close()
 
     def start(self):
         self.stream = sd.InputStream(channels=1, samplerate=16000, dtype='float32',
