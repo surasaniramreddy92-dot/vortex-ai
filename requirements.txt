@@ -1,0 +1,17 @@
+# VORTEX desktop voice assistant dependencies
+# NumPy 2.x is intentionally avoided because the ONNX wake-word stack currently
+# uses the NumPy 1.x ABI.
+numpy==1.26.4
+psutil==7.2.2
+pygame==2.6.1
+pystray==0.19.5
+sounddevice==0.5.5
+SpeechRecognition==3.16.1
+# Backend that SpeechRecognition's Microphone class requires.
+PyAudio==0.2.14
+Pillow==12.2.0
+python-dotenv==1.2.2
+edge-tts==7.2.8
+ollama==0.6.2
+openwakeword==0.6.0
+onnxruntime==1.17.3

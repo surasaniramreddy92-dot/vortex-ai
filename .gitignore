@@ -1,0 +1,20 @@
+# Secrets - never commit
+.env
+
+# Virtual environment
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime logs
+logs/*.log
+
+# Regeneratable synthetic training audio (34MB+, rebuilt by build_hey_vortex.py)
+tools/wakeword/cache/
+
+# Empty placeholder directory, not part of the source tree
+/models/
