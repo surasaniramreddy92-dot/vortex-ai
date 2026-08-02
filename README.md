@@ -1,15 +1,34 @@
 # VORTEX AI
 
-A voice-driven desktop assistant on a path toward a full agentic personal
-operating system. Today it's a single Windows tray application; the
-[master roadmap](#roadmap-phases-0-16) below describes the 17-phase plan for
-everything it's meant to become. See [IMPLEMENTED.md](IMPLEMENTED.md) for an
-honest, phase-by-phase status matrix — this README summarizes it.
+A voice-driven desktop assistant, built incrementally against a 17-phase
+roadmap (Phase 0–16) toward a full agentic personal operating system. This
+README only documents the phases with real work in the repo so far — it's
+updated in the same commit/PR as each phase lands, rather than describing
+work that doesn't exist yet. See [IMPLEMENTED.md](IMPLEMENTED.md) for the
+detailed status/notes on each of those phases.
 
 **Current state in one sentence:** VORTEX wakes on a custom-trained "Hey
 Vortex" model, holds a multi-turn voice conversation with barge-in
 interruption, executes a handful of deterministic OS commands, and falls back
 to a local Ollama LLM for everything else.
+
+## Phases with work in this repo so far
+
+| Phase | Name | Status |
+|---|---|---|
+| 0 | Engineering Foundation & Repository Discipline | Started |
+| 1 | Voice I/O Foundation | Partial |
+| 2 | Desktop & OS Automation | Partial |
+| 4 | LLM Brain, Tool Calling & Hybrid Intent Routing | Partial |
+| 6 | Wake Word, Session Mode & Barge-In | **Implemented (v1)** |
+| 15 | Security, Identity & Policy Enforcement | Partial |
+
+Everything else in the master roadmap (browser automation, memory/RAG,
+document intelligence, vision, service layer, durable workflows, career
+intelligence, multi-agent orchestration, developer agent, observability) has
+no code yet. It'll show up here, in IMPLEMENTED.md, and in
+[docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md) as each phase actually lands,
+phase by phase, in its own commit batch.
 
 ## Quickstart
 
@@ -64,10 +83,7 @@ Microphone
 
 Everything lives in one file, [src/vortex/main.py](src/vortex/main.py), by
 design at this stage — see [IMPLEMENTED.md](IMPLEMENTED.md) Phase 0 for why
-that's the biggest near-term debt, and the
-[Claude Code implementation contract](#implementation-contract) below for why
-it should *stay* one file a little longer rather than being split
-prematurely.
+that's the biggest near-term debt.
 
 ## The wake-word training pipeline
 
@@ -84,52 +100,11 @@ instead of only synthetic ones.
 
 ## Learning resources
 
-- [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md) — a substantive,
-  phase-by-phase explanation of the concepts behind the whole roadmap (not
-  just what's built yet), meant to be read as a study guide.
+- [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md) — substantive explanations
+  of the concepts behind each phase covered so far, meant to be read as a
+  study guide, not a one-liner summary.
 - [IMPLEMENTED.md](IMPLEMENTED.md) — the acceptance-scenario-driven status
-  matrix.
-
-## Roadmap (Phases 0–16)
-
-| Phase | Name | Status |
-|---|---|---|
-| 0 | Engineering Foundation & Repository Discipline | Planned |
-| 1 | Voice I/O Foundation | Partial |
-| 2 | Desktop & OS Automation | Partial |
-| 3 | Browser Automation & Web Interaction | Planned |
-| 4 | LLM Brain, Tool Calling & Hybrid Intent Routing | Partial |
-| 5 | Memory, Knowledge & Production RAG | Planned |
-| 6 | Wake Word, Session Mode & Barge-In | **Implemented (v1)** |
-| 7 | Document Intelligence | Planned |
-| 8 | Vision & Screen Understanding | Planned |
-| 9 | FastAPI Service Layer & Event-Driven Core | Planned |
-| 10 | Durable Workflow Orchestration | Planned |
-| 11 | Resume & Career Intelligence | Planned |
-| 12 | Job Discovery & Safe Application Automation | Planned |
-| 13 | Multi-Agent Orchestration | Planned |
-| 14 | Developer Agent & Software Generation | Planned |
-| 15 | Security, Identity & Policy Enforcement | Partial |
-| 16 | Production Platform: Observability, Deployment | Planned |
-
-Full detail per phase (objective, recommended tech, concepts, exit criteria)
-is in [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md).
-
-## Implementation contract
-
-From the master blueprint, and worth restating here so it isn't lost:
-
-- Treat the roadmap as a specification, not permission to build every feature
-  into one giant `main.py`. Implement phase-by-phase behind stable interfaces.
-- Deterministic tools before LLM reasoning; LLM reasoning before browser/UI
-  automation as a last resort.
-- Consequential actions (destructive OS commands, submissions, payments,
-  irreversible operations) require confirmation — never bypass CAPTCHA, MFA,
-  or access controls.
-- Never mark a phase complete until its listed acceptance scenario passes
-  end-to-end, not just "an API exists."
-- Never commit credentials, personal data, resume contents, or session
-  secrets.
+  matrix for those same phases.
 
 ## Known limitations (read before relying on this)
 
