@@ -173,7 +173,12 @@ class Vortex:
             yield buf
 
     def _synth(self, loop, text):
-        """Render one chunk to an mp3 and return its path, or None if it failed."""
+        """Render one chunk to an mp3 and return its path, or None if it failed.
+        Logs the chunk here (not just in speak()) so speak_stream() - every LLM
+        and document answer - is actually visible in the log too; previously only
+        speak()'s deterministic replies ("Yes Boss?", date/time) were logged at
+        all, leaving every AI-generated response completely unlogged."""
+        self.log(f'Speaking: {text}')
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         path = tmp.name
         tmp.close()
@@ -252,7 +257,8 @@ class Vortex:
         return not interrupted
 
     def speak(self, text):
-        self.log(f'Speaking: {text}')
+        # No log call here - _synth logs each chunk as it's actually synthesized,
+        # which covers both this method and speak_stream() uniformly.
         return self._speak_chunks(self._chunk_stream(iter([text])))
 
     def speak_stream(self, fragments):
@@ -625,8 +631,11 @@ class Vortex:
         audio = self._agc((indata[:, 0] * 32767).astype(np.int16))
         score = max(self.wake_model.predict(audio).values())
         speaking = self.speaking.is_set()
-        # TEMPORARY diagnostic: log any near-miss so we can see real scores instead
-        # of only ever seeing full triggers or total silence - remove once resolved.
+        # Ongoing diagnostic, not temporary: false wake activations in standby are
+        # still an open issue (see IMPLEMENTED.md Phase 6) - this is what makes any
+        # future occurrence tunable from real data instead of guesswork. Barge-in
+        # itself was confirmed fixed via a live acoustic test on 2026-08-16 (see
+        # CHANGELOG.md), which is what this same logging line helped verify.
         if score > 0.3:
             self.log(f'[diag] score={score:.3f} threshold={WAKE_THRESHOLD if not speaking else BARGE_IN_THRESHOLD} noise_floor={self.noise_floor:.0f}')
         if score < (BARGE_IN_THRESHOLD if speaking else WAKE_THRESHOLD):

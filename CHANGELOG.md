@@ -8,7 +8,28 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Verified
+- **Barge-in confirmed actually working, end-to-end, via a real acoustic
+  test** - not a unit test, not a code read-through: synthesized audio
+  played through the real speakers, picked up by the real mic. Sequence:
+  wake → "Yes Boss?" → question captured and answered → "Hey Vortex" said
+  again mid-response → interrupted mid-sentence within ~1.5s. The standing
+  complaint that barge-in "doesn't work" was most likely the wake-stream-
+  death bug (fixed earlier today), not the interruption logic itself - once
+  the stream stopped silently dying, barge-in worked on the first live test.
+  Test scripts (acoustic loopback via edge-tts + pygame, log-synchronized
+  polling rather than fixed sleeps) are disposable/local, not committed.
+
 ### Fixed
+- **`speak_stream()` - every LLM answer and document response - was never
+  logged at all.** Only `speak()`'s deterministic replies ("Yes Boss?",
+  date/time) logged what they said; anything AI-generated was invisible in
+  the log. Found while writing the barge-in test above (a `wait_for
+  ("Speaking:", ...)` check kept timing out - not because VORTEX wasn't
+  responding, but because that log line structurally never gets written for
+  streamed responses). Moved the log call into `_synth()`, which both
+  `speak()` and `speak_stream()` funnel through per-chunk - now every
+  spoken chunk is logged, including the actual text of every AI response.
 - **Wake word silently stopped registering after the app had been running a
   while**, even at full volume, with no error anywhere in the logs. Root
   cause: `_own_mic()` called `stream.stop()`/`stream.start()` on the *same*
