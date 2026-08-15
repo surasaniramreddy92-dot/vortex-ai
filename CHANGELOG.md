@@ -8,6 +8,29 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Fixed (revert)
+- **`VORTEX_TTS_VOLUME`'s default of `0.6` (added earlier today as a barge-in
+  mitigation, see below) made VORTEX effectively silent in real use** -
+  confirmed live: after restarting with the lower default, "Hey Vortex" got
+  zero audible response ("Yes Boss?" was being logged as spoken but never
+  heard). A standalone pygame test proved `set_volume(0.6)` itself doesn't
+  throw and does play audio for the correct duration, so this wasn't a code
+  exception - the reduced level just wasn't enough headroom above this
+  machine's actual output/room conditions to be perceptible, despite sounding
+  reasonable in isolation. Reverted the default back to `1.0` (unchanged,
+  full volume). The env var and the underlying self-noise mitigation
+  mechanism stay in place for anyone who wants to opt in and tune it
+  (`VORTEX_TTS_VOLUME=0.6` or similar via `.env`), but it is no longer
+  silently on by default - a barge-in improvement nobody can hear is worse
+  than no improvement at all.
+- **Confirmed, via the same live session, a real and separate problem**:
+  wake detection and "Yes Boss?" both work reliably at full volume, but the
+  follow-up command very often fails to transcribe (`Capture error:
+  UnknownValueError` immediately after almost every "Yes Boss?") - this is
+  what actually reads as "not responding" day to day, distinct from both the
+  volume regression above and the barge-in self-noise issue. Not yet fixed;
+  under active investigation.
+
 ### Verified
 - **Barge-in confirmed actually working, end-to-end, via a real acoustic
   test** - not a unit test, not a code read-through: synthesized audio

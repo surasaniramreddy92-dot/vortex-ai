@@ -56,7 +56,7 @@ class VortexConfig:
     # mixed signal, it can't separate one voice from another. Turning VORTEX's
     # own output down is the practical mitigation available without building
     # full acoustic echo cancellation. 1.0 = unchanged/full volume.
-    tts_volume: float = field(default_factory=lambda: _float_env('VORTEX_TTS_VOLUME', 0.6))
+    tts_volume: float = field(default_factory=lambda: _float_env('VORTEX_TTS_VOLUME', 1.0))
 
     wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.8))
     barge_in_threshold: float = field(default_factory=lambda: _float_env('VORTEX_BARGE_IN_THRESHOLD', 0.75))

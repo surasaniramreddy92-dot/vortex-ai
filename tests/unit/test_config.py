@@ -25,7 +25,7 @@ def test_defaults_match_main_py():
     cfg = VortexConfig.from_env()
     assert cfg.voice == 'en-US-AvaMultilingualNeural'
     assert cfg.user_name == 'Boss'
-    assert cfg.tts_volume == 0.6
+    assert cfg.tts_volume == 1.0
     assert cfg.wake_threshold == 0.8
     assert cfg.barge_in_threshold == 0.75
     assert cfg.wake_cooldown == 1.5
