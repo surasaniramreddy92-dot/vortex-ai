@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vortex-ai"
+version = "0.1.0"
+description = "VORTEX AI - voice-driven desktop assistant on a path toward a full agentic personal operating system"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# Core dependencies split by concern, all pinned to the exact versions verified
+# working in this environment (checked via `pip show`, not assumed). Split so a
+# future non-Windows or headless environment isn't forced to install Windows-only
+# or audio-only packages it can't use.
+dependencies = [
+    # NumPy 2.x is intentionally avoided - the ONNX wake-word stack currently
+    # uses the NumPy 1.x ABI.
+    "numpy==1.26.4",
+    "psutil==7.2.2",
+    "python-dotenv==1.2.2",
+    "ollama==0.6.2",
+]
+
+[project.optional-dependencies]
+# Audio I/O, wake word, TTS/STT - everything needed to actually run the voice loop.
+voice = [
+    "pygame==2.6.1",
+    "sounddevice==0.5.5",
+    "SpeechRecognition==3.16.1",
+    "PyAudio==0.2.14",  # backend SpeechRecognition's Microphone class requires
+    "edge-tts==7.2.8",
+    "openwakeword==0.6.0",
+    "onnxruntime==1.17.3",
+]
+# Tray icon and Windows-specific OS automation (protected-process names, .exe
+# app launching, lock/shutdown commands are Windows-only regardless of this
+# extra - see docs/CURRENT_STATE.md Phase 2/platform notes).
+windows = [
+    "pystray==0.19.5",
+    "Pillow==12.2.0",
+]
+# Phase 7: document intelligence (PDF/DOCX/XLSX text extraction).
+documents = [
+    "pymupdf==1.28.0",
+    "python-docx==1.2.0",
+    "openpyxl==3.1.5",
+]
+# Phase 3: browser automation. After installing, also run:
+#   python -m playwright install chromium
+browser = [
+    "playwright==1.62.0",
+]
+# Phase 5: RAG - requires PostgreSQL and Qdrant running locally (see README).
+rag = [
+    "psycopg2-binary==2.9.12",
+    "qdrant-client==1.18.0",
+]
+# Only needed to run tools/wakeword/build_hey_vortex.py (retraining the wake
+# model) - not needed to run VORTEX itself. Previously undeclared anywhere,
+# so a fresh clone's `pip install -r requirements.txt` left this broken
+# (see docs/CURRENT_STATE.md Section 3).
+wakeword-training = [
+    "onnx==1.22.0",
+    "imageio-ffmpeg==0.6.0",
+    "scikit-learn==1.9.0",
+]
+dev = [
+    "pytest==9.1.1",
+]
+# Everything needed to actually run `python -m src.vortex.main` today.
+all = [
+    "vortex-ai[voice,windows,documents,browser,rag]",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
