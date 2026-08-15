@@ -5,7 +5,9 @@ roadmap (Phase 0–16) toward a full agentic personal operating system. This
 README only documents the phases with real work in the repo so far — it's
 updated in the same commit/PR as each phase lands, rather than describing
 work that doesn't exist yet. See [IMPLEMENTED.md](IMPLEMENTED.md) for the
-detailed status/notes on each of those phases.
+detailed status/notes on each of those phases, and
+[CHANGELOG.md](CHANGELOG.md) for a dated, day-by-day record of what shipped
+when.
 
 **Current state in one sentence:** VORTEX wakes on a custom-trained "Hey
 Vortex" model, holds a multi-turn voice conversation with barge-in

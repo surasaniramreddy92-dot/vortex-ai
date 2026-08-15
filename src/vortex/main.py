@@ -49,6 +49,10 @@ WAKE_THRESHOLD = float(os.getenv('VORTEX_WAKE_THRESHOLD', '0.8'))
 # diagnostic logging in _on_audio if false barge-ins actually start showing up.
 BARGE_IN_THRESHOLD = float(os.getenv('VORTEX_BARGE_IN_THRESHOLD', '0.75'))
 WAKE_COOLDOWN = 1.5
+# Safety net: callbacks should fire every ~80ms while listening. If none arrive for
+# this long outside of an active SpeechRecognition handoff, the stream is presumed
+# dead and gets rebuilt - see _recover_wake_stream's docstring for why this is needed.
+WAKE_WATCHDOG_TIMEOUT = 5.0
 # Laptop mics are quiet by default; boost normal speaking volume up to a target
 # level before wake-word inference so you don't have to raise your voice. Gated
 # against a rolling ambient-noise-floor estimate so steady background noise
@@ -106,6 +110,7 @@ class Vortex:
         self.events = queue.Queue()
         self.last_wake = 0.0
         self.noise_floor = 250.0
+        self.last_audio_at = time.monotonic()
         self.wake_model = Model(wakeword_models=[WAKE_WORD], inference_framework='onnx')
         self.protected = {
             'python.exe','pythonw.exe','ollama.exe','explorer.exe','winlogon.exe','csrss.exe',
@@ -260,21 +265,49 @@ class Vortex:
 
     # ---------- speech input ----------
 
+    def _open_wake_stream(self):
+        return sd.InputStream(channels=1, samplerate=16000, dtype='float32',
+                              blocksize=1280, callback=self._on_audio)
+
+    def _recover_wake_stream(self):
+        """(Re)build the wake InputStream from scratch. Used both after handing
+        the mic back from SpeechRecognition and by the watchdog in _worker()."""
+        if self.stream is not None:
+            with contextlib.suppress(Exception):
+                self.stream.stop()
+                self.stream.close()
+        try:
+            self.wake_model.reset()
+            self.stream = self._open_wake_stream()
+            self.stream.start()
+            self.last_audio_at = time.monotonic()
+        except Exception as e:
+            self.log(f'Wake stream recovery failed: {e}')
+
     @contextlib.contextmanager
     def _own_mic(self):
-        """Hand the mic to SpeechRecognition; the wake stream stands down meanwhile."""
+        """Hand the mic to SpeechRecognition; the wake stream stands down meanwhile.
+
+        Closes and recreates the InputStream on each handoff rather than calling
+        stop()/start() on the same instance. Reusing one stream across many
+        stop/start cycles (one pair per command, so hundreds over a long-running
+        session) proved to eventually stop delivering audio to _on_audio with no
+        exception raised anywhere - the process stays alive and the tray icon
+        still responds, but the wake word silently stops registering. This is
+        exactly what made VORTEX look like it had "stopped listening" after
+        running a while, even though nothing in the code was erroring."""
         self.capturing.set()
         if self.stream is not None:
-            try: self.stream.stop()
-            except Exception as e: self.log(f'Wake stream stop failed: {e}')
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception as e:
+                self.log(f'Wake stream close failed: {e}')
+            self.stream = None
         try:
             yield
         finally:
-            if self.stream is not None:
-                try:
-                    self.wake_model.reset()
-                    self.stream.start()
-                except Exception as e: self.log(f'Wake stream restart failed: {e}')
+            self._recover_wake_stream()
             self.capturing.clear()
 
     def capture_command(self, timeout=8):
@@ -299,7 +332,7 @@ class Vortex:
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.memory.recent(HISTORY_TURNS)
         reply = ''
         try:
-            stream = ollama.chat(model=MODEL, messages=messages, stream=True)
+            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m')
         except Exception as e:
             self.log(f'LLM error: {e}')
             yield 'Sorry Boss, my reasoning engine is currently offline.'
@@ -328,7 +361,7 @@ class Vortex:
         in, tokens out, stoppable mid-generation exactly like ask_llm_stream."""
         messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_content}]
         try:
-            stream = ollama.chat(model=MODEL, messages=messages, stream=True)
+            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m')
         except Exception as e:
             self.log(f'Document LLM error: {e}')
             yield 'Sorry Boss, my reasoning engine is currently offline.'
@@ -560,6 +593,7 @@ class Vortex:
         """Audio thread. Stays cheap: detect, flag, hand off. Never speaks or blocks."""
         if not self.running:
             raise sd.CallbackStop()
+        self.last_audio_at = time.monotonic()
         if self.capturing.is_set():
             return
         audio = self._agc((indata[:, 0] * 32767).astype(np.int16))
@@ -589,15 +623,39 @@ class Vortex:
                 return
             self.execute(cmd)
 
+    def _warm_up_models(self):
+        """Ollama unloads a model from memory after ~5 min idle; the next request
+        then pays a cold-load cost (measured ~9s for llama3.2:1b on this machine)
+        on top of normal STT/network latency, which is exactly what makes VORTEX
+        look like it isn't responding on the first real command after a restart
+        or a pause. Firing a trivial request per model right at startup, off the
+        greeting's critical path, means that cost is usually already paid by the
+        time you actually speak."""
+        try:
+            ollama.chat(model=MODEL, messages=[{'role': 'user', 'content': 'hi'}], keep_alive='30m')
+        except Exception as e:
+            self.log(f'Model warm-up failed (LLM): {e}')
+        if self.rag is not None:
+            try:
+                ollama.embeddings(model=os.getenv('VORTEX_EMBED_MODEL', 'nomic-embed-text'),
+                                 prompt='warm up', keep_alive='30m')
+            except Exception as e:
+                self.log(f'Model warm-up failed (embeddings): {e}')
+
     def _worker(self):
         """Owns every slow operation: speaking, listening, executing."""
         time.sleep(1.5)
         self.stop_speaking.clear()
+        threading.Thread(target=self._warm_up_models, daemon=True).start()
         self.greet()
         while self.running:
             try:
                 event = self.events.get(timeout=0.5)
             except queue.Empty:
+                if (not self.capturing.is_set()
+                        and time.monotonic() - self.last_audio_at > WAKE_WATCHDOG_TIMEOUT):
+                    self.log(f'Wake stream watchdog: no audio for over {WAKE_WATCHDOG_TIMEOUT}s, rebuilding stream')
+                    self._recover_wake_stream()
                 continue
             while not self.events.empty():
                 with contextlib.suppress(queue.Empty):
@@ -661,8 +719,7 @@ class Vortex:
                 self.rag.close()
 
     def start(self):
-        self.stream = sd.InputStream(channels=1, samplerate=16000, dtype='float32',
-                                     blocksize=1280, callback=self._on_audio)
+        self.stream = self._open_wake_stream()
         self.stream.start()
         threading.Thread(target=self._worker, daemon=True).start()
         self.icon = pystray.Icon('VORTEX', self.tray_icon(), 'VORTEX Assistant', menu=pystray.Menu(

@@ -39,7 +39,9 @@ TOP_K = 5
 
 
 def _embed(text):
-    res = ollama.embeddings(model=EMBED_MODEL, prompt=text)
+    # keep_alive: document ingestion can call this many times in a row (one per
+    # chunk) - without it Ollama's default ~5min idle-unload can trigger mid-batch.
+    res = ollama.embeddings(model=EMBED_MODEL, prompt=text, keep_alive='30m')
     return res['embedding']
 
 
@@ -68,10 +70,15 @@ def _chunk_text(text, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
 
 class RagStore:
     def __init__(self):
-        self._pg = psycopg2.connect(POSTGRES_DSN)
+        # Explicit short timeouts on both connections: Postgres/Qdrant are separate
+        # local services that can be down or still starting. Without a bound here,
+        # a hung connection attempt blocks VORTEX's entire startup (constructed
+        # synchronously in Vortex.__init__, before the wake stream or anything else
+        # comes up) instead of the caller's try/except catching a fast, clean failure.
+        self._pg = psycopg2.connect(POSTGRES_DSN, connect_timeout=5)
         self._pg.autocommit = True
         self._init_postgres_schema()
-        self._qdrant = QdrantClient(url=QDRANT_URL)
+        self._qdrant = QdrantClient(url=QDRANT_URL, timeout=5)
         self._init_qdrant_collection()
 
     def _init_postgres_schema(self):
