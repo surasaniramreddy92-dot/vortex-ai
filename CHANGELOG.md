@@ -37,9 +37,37 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 - "Qdrant Vector DB Autostart" scheduled task now auto-restarts up to 3 times
   (1 min apart) if the process exits unexpectedly, instead of staying dead
   until the next login.
+- **Command audio sent to speech-to-text was completely unboosted**, unlike
+  the wake stream (which runs through `_agc`) - a real asymmetry where "Hey
+  Vortex" could fire fine on a boosted signal while the actual follow-up
+  command consistently failed to transcribe on a raw one. Added
+  `_boost_audio_data()` applying the same gain treatment before
+  `recognize_google()`. Also fixed `Capture error:` log lines that had been
+  silently empty this entire project - `sr.UnknownValueError`'s `str()` is
+  empty by design; the log now includes the exception type name too.
+
+### Changed
+- **Started the modular refactor** (`docs/REFACTOR_PLAN.md` Step 1), on hold
+  since the audit that produced it: `pyproject.toml` with dependency groups
+  split by concern (every version pinned to what's actually installed,
+  verified via `pip show`, not guessed), and `src/vortex/config.py` - a typed
+  config object mirroring every constant in `main.py`. Not wired into
+  `main.py` yet (Step 2); zero behavior change, verified by restarting
+  VORTEX afterward and confirming it still greets and detects wake
+  identically. Caught a real bug before it shipped: a first draft of
+  `config.py` used plain class-body `= os.getenv(...)` defaults, which
+  Python freezes at class-definition time - confirmed with a standalone
+  repro, not assumed - so the config would have silently ignored any env
+  var set after the module was first imported. Fixed by switching every
+  field to `field(default_factory=...)`, with a regression test
+  (`test_two_instances_are_independent_snapshots`) written specifically to
+  catch it if it comes back. `legacy/main_working_baseline.py` added as the
+  verbatim (byte-diffed) pre-refactor safety copy per the standing rule.
 
 ### Added
 - `CHANGELOG.md` (this file).
+- `tests/unit/test_config.py` - the first real pytest tests in the repo (7,
+  all passing).
 
 ## 2026-08-02
 
