@@ -310,17 +310,43 @@ class Vortex:
             self._recover_wake_stream()
             self.capturing.clear()
 
+    @staticmethod
+    def _boost_audio_data(audio):
+        """Unlike the wake stream (boosted by _agc), command audio captured via
+        sr.Microphone() went straight to Google's STT completely unboosted - a
+        real asymmetry: the wake word could fire fine (boosted signal) while the
+        actual follow-up command consistently failed to transcribe (raw signal),
+        which is exactly what full-volume "Hey Vortex" working while nothing
+        after it ever got heard looks like. Boost toward the same target RMS
+        used for wake detection before handing audio to recognize_google."""
+        if audio.sample_width != 2:
+            return audio
+        samples = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
+        if len(samples) == 0:
+            return audio
+        rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
+        if rms < 40:  # near-total silence - nothing meaningful to boost
+            return audio
+        gain = min(6.0, AGC_TARGET_RMS / rms)
+        if gain <= 1.0:
+            return audio
+        boosted = np.clip(samples.astype(np.float64) * gain, -32768, 32767).astype(np.int16)
+        return sr.AudioData(boosted.tobytes(), audio.sample_rate, audio.sample_width)
+
     def capture_command(self, timeout=8):
         try:
             with self._own_mic():
                 with sr.Microphone() as src:
                     self.recognizer.adjust_for_ambient_noise(src, duration=0.3)
                     audio = self.recognizer.listen(src, timeout=timeout, phrase_time_limit=8)
+            audio = self._boost_audio_data(audio)
             cmd = self.recognizer.recognize_google(audio).lower().strip()
             self.log(f'Heard: {cmd}')
             return cmd
         except Exception as e:
-            self.log(f'Capture error: {e}')
+            # type(e).__name__ matters: sr.UnknownValueError's str() is empty, which
+            # is exactly why every past "Capture error:" line here showed nothing.
+            self.log(f'Capture error: {type(e).__name__}: {e}')
             return None
 
     # ---------- reasoning ----------
@@ -599,6 +625,10 @@ class Vortex:
         audio = self._agc((indata[:, 0] * 32767).astype(np.int16))
         score = max(self.wake_model.predict(audio).values())
         speaking = self.speaking.is_set()
+        # TEMPORARY diagnostic: log any near-miss so we can see real scores instead
+        # of only ever seeing full triggers or total silence - remove once resolved.
+        if score > 0.3:
+            self.log(f'[diag] score={score:.3f} threshold={WAKE_THRESHOLD if not speaking else BARGE_IN_THRESHOLD} noise_floor={self.noise_floor:.0f}')
         if score < (BARGE_IN_THRESHOLD if speaking else WAKE_THRESHOLD):
             return
         now = time.monotonic()
