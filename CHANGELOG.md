@@ -8,6 +8,31 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Fixed
+- **`WAKE_THRESHOLD` (0.8) was too strict for real human voice, causing "Hey
+  Vortex" to frequently not register at all** - 0.8 was calibrated only
+  against synthetic TTS clips (`tools/wakeword/validate_hey_vortex.py`),
+  never against a real mic. Live evidence from today's session: 74 separate
+  real "Hey Vortex" attempts scored between 0.65 and 0.84 and never
+  triggered - genuine attempts landing just under 0.8, not background noise
+  (the session's median score was 0.46, nowhere near this band). Lowered to
+  0.75, matching `BARGE_IN_THRESHOLD`, which had already proven reliable in
+  live use at that level the same day. Verified immediately after: two
+  wake triggers at 0.984 and 0.977, both followed by strong real captures
+  (raw RMS 9585 and 13542) and working exchanges. Trade-off: standby false
+  positives were already a known open issue before this and a lower
+  threshold makes that more likely, not less - considered worth it, since
+  a wake word that doesn't wake is a worse failure mode.
+- Added temporary diagnostic logging to `capture_command()` (duration + raw
+  RMS of the captured audio, logged even when `recognize_google()` fails) -
+  used to confirm the "doesn't understand what I said next" failures are a
+  real, low-signal capture problem (RMS 144-283, near silence) and not a
+  code-level bug: on the same live test, RMS 9585 and 13542 captures both
+  transcribed successfully. Root cause of the low-signal captures
+  themselves (timing right after "Yes Boss?", mic distance, or something
+  else) is not yet identified - this logging is what the next investigation
+  will use.
+
 ### Fixed (revert)
 - **`VORTEX_TTS_VOLUME`'s default of `0.6` (added earlier today as a barge-in
   mitigation, see below) made VORTEX effectively silent in real use** -

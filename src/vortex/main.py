@@ -357,7 +357,16 @@ class Vortex:
                 with sr.Microphone() as src:
                     self.recognizer.adjust_for_ambient_noise(src, duration=0.3)
                     audio = self.recognizer.listen(src, timeout=timeout, phrase_time_limit=8)
+            # Diagnostic only (temporary - remove once the frequent post-"Yes Boss?"
+            # UnknownValueError failures are root-caused): logs what was actually
+            # captured even when recognize_google() can't transcribe it, so a near-
+            # silent/garbled buffer (mic handoff timing) can be told apart from a
+            # buffer with real signal that Google just couldn't parse.
+            raw = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
+            raw_rms = np.sqrt(np.mean(raw.astype(np.float64) ** 2)) if len(raw) else 0.0
+            duration = len(raw) / audio.sample_rate if audio.sample_rate else 0.0
             audio = self._boost_audio_data(audio)
+            self.log(f'[diag] captured duration={duration:.2f}s raw_rms={raw_rms:.0f}')
             cmd = self.recognizer.recognize_google(audio).lower().strip()
             self.log(f'Heard: {cmd}')
             return cmd
