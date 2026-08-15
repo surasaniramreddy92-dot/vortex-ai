@@ -1,10 +1,8 @@
 """Typed configuration for VORTEX.
 
-Not wired into main.py yet - this is Step 1 of docs/REFACTOR_PLAN.md, which is
-scoped to add this alongside the current module-level `os.getenv(...)` calls
-in main.py without changing any behavior. Step 2 is what actually switches
-main.py over to reading from this object; until then, this file exists purely
-to be built and tested independently.
+Wired into main.py as of Step 2 of docs/REFACTOR_PLAN.md (main.py's module-
+level constants are populated from one VortexConfig instance instead of their
+own scattered os.getenv(...) calls).
 
 Every field mirrors an existing constant in main.py, name-for-name and
 default-for-default, verified directly against main.py's source at the time
@@ -50,6 +48,15 @@ class VortexConfig:
     root: str = field(default_factory=_default_root)
     voice: str = field(default_factory=lambda: os.getenv('VORTEX_VOICE', 'en-US-AvaMultilingualNeural'))
     user_name: str = field(default_factory=lambda: os.getenv('USER_NAME', 'Boss'))
+    # On laptops the mic and speakers sit close together, so VORTEX's own voice
+    # dominates whatever the mic hears while it's talking - a real barge-in
+    # failure traced to this: real diagnostic logs showed zero wake-model score
+    # above 0.3 (not "just under threshold") while the user tried to interrupt
+    # during a long response. Gain control can't fix this - it scales the whole
+    # mixed signal, it can't separate one voice from another. Turning VORTEX's
+    # own output down is the practical mitigation available without building
+    # full acoustic echo cancellation. 1.0 = unchanged/full volume.
+    tts_volume: float = field(default_factory=lambda: _float_env('VORTEX_TTS_VOLUME', 0.6))
 
     wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.8))
     barge_in_threshold: float = field(default_factory=lambda: _float_env('VORTEX_BARGE_IN_THRESHOLD', 0.75))
