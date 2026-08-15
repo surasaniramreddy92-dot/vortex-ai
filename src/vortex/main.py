@@ -29,51 +29,61 @@ from .memory import MemoryStore
 from .documents import resolve_document, extract_text, build_document_prompt
 from .browser import BrowserAgent
 from .rag import RagStore, build_rag_prompt
+from .config import VortexConfig
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
-ROOT = r'E:\VORTEX'
-VOICE = os.getenv('VORTEX_VOICE', 'en-US-AvaMultilingualNeural')
-USER_NAME = os.getenv('USER_NAME', 'Boss')
+
+# Refactor Step 2 (docs/REFACTOR_PLAN.md): every value below now comes from one
+# typed VortexConfig instead of its own os.getenv(...) call. Deliberately kept as
+# module-level constants for now, not self.config.* attribute access throughout
+# the class - that's a larger, separate change (Step 3+, extracting subsystems
+# into their own files). This step is scoped to "read from config.py", not
+# "restructure every call site"; every default below is unchanged from before,
+# verified by tests/unit/test_config.py asserting each one against main.py's
+# prior values.
+_cfg = VortexConfig.from_env()
+ROOT = _cfg.root
+VOICE = _cfg.voice
+USER_NAME = _cfg.user_name
 # Custom-trained model (tools/wakeword/build_hey_vortex.py) so the phrase matches the assistant's name.
-WAKE_WORD = os.getenv('VORTEX_WAKE_WORD', os.path.join(ROOT, 'tools', 'wakeword', 'models', 'hey_vortex.onnx'))
+WAKE_WORD = _cfg.wake_word
 # Calibrated against held-out synthetic clips (tools/wakeword/validate_hey_vortex.py),
 # which only covers clean TTS audio, not real mic/room noise - raised from 0.7 after
 # real-world false activations (background noise, amplified by AGC, crossing 0.7).
-WAKE_THRESHOLD = float(os.getenv('VORTEX_WAKE_THRESHOLD', '0.8'))
+WAKE_THRESHOLD = _cfg.wake_threshold
 # NOT stricter than WAKE_THRESHOLD, on purpose: every observed false trigger so far
 # happened in standby, none during barge-in, and barge-in is inherently *harder* to
 # score high on (the mic also hears our own speakers, diluting the user's voice) -
 # so making it a *higher* bar than standby (an earlier 0.9 attempt) just made
 # genuine interruptions fail. Revisit with real numbers from the score/noise_floor
 # diagnostic logging in _on_audio if false barge-ins actually start showing up.
-BARGE_IN_THRESHOLD = float(os.getenv('VORTEX_BARGE_IN_THRESHOLD', '0.75'))
-WAKE_COOLDOWN = 1.5
+BARGE_IN_THRESHOLD = _cfg.barge_in_threshold
+WAKE_COOLDOWN = _cfg.wake_cooldown
 # Safety net: callbacks should fire every ~80ms while listening. If none arrive for
 # this long outside of an active SpeechRecognition handoff, the stream is presumed
 # dead and gets rebuilt - see _recover_wake_stream's docstring for why this is needed.
-WAKE_WATCHDOG_TIMEOUT = 5.0
+WAKE_WATCHDOG_TIMEOUT = _cfg.wake_watchdog_timeout
 # Laptop mics are quiet by default; boost normal speaking volume up to a target
 # level before wake-word inference so you don't have to raise your voice. Gated
 # against a rolling ambient-noise-floor estimate so steady background noise
 # doesn't get amplified into a false trigger - only signal that stands out
 # above the floor (a real voice-like transient) gets boosted.
-AGC_TARGET_RMS = float(os.getenv('VORTEX_AGC_TARGET_RMS', '3500'))
-AGC_MAX_GAIN = float(os.getenv('VORTEX_AGC_MAX_GAIN', '4.0'))
-AGC_NOISE_MARGIN = float(os.getenv('VORTEX_AGC_NOISE_MARGIN', '1.6'))
+AGC_TARGET_RMS = _cfg.agc_target_rms
+AGC_MAX_GAIN = _cfg.agc_max_gain
+AGC_NOISE_MARGIN = _cfg.agc_noise_margin
 # How long an active session stays open for follow-ups (confirmations, next
 # command) before requiring the wake word again.
-SESSION_TIMEOUT = float(os.getenv('VORTEX_SESSION_TIMEOUT', '18'))
-MODEL = 'llama3.2:1b'
-SYSTEM_PROMPT = ('You are VORTEX, a concise desktop AI assistant. You are heard, not read, '
-                 'so answer in short spoken sentences and never use markdown or code blocks.')
-LOG_DIR = os.path.join(ROOT, 'logs')
+SESSION_TIMEOUT = _cfg.session_timeout
+MODEL = _cfg.llm_model
+SYSTEM_PROMPT = _cfg.system_prompt
+LOG_DIR = _cfg.log_dir
 os.makedirs(LOG_DIR, exist_ok=True)
-DATA_DIR = os.path.join(ROOT, 'data')
+DATA_DIR = _cfg.data_dir
 os.makedirs(DATA_DIR, exist_ok=True)
-MEMORY_DB_PATH = os.getenv('VORTEX_MEMORY_DB', os.path.join(DATA_DIR, 'vortex_memory.db'))
-HISTORY_TURNS = 10
-SUMMARY_MAX_CHARS = 12000  # plain-summarize path only; RAG-backed Q&A doesn't need this cap
+MEMORY_DB_PATH = _cfg.memory_db_path
+HISTORY_TURNS = _cfg.history_turns
+SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-backed Q&A doesn't need this cap
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 pygame.mixer.init()
 
@@ -676,8 +686,7 @@ class Vortex:
             self.log(f'Model warm-up failed (LLM): {e}')
         if self.rag is not None:
             try:
-                ollama.embeddings(model=os.getenv('VORTEX_EMBED_MODEL', 'nomic-embed-text'),
-                                 prompt='warm up', keep_alive='30m')
+                ollama.embeddings(model=_cfg.embed_model, prompt='warm up', keep_alive='30m')
             except Exception as e:
                 self.log(f'Model warm-up failed (embeddings): {e}')
 
