@@ -59,18 +59,31 @@ class VortexConfig:
     tts_volume: float = field(default_factory=lambda: _float_env('VORTEX_TTS_VOLUME', 1.0))
 
     # 0.8 was calibrated against synthetic TTS clips only (tools/wakeword/validate_hey_vortex.py),
-    # never against real human voice at typical laptop-mic distance. Real usage on
-    # 2026-08-16 showed why that matters: 74 real "Hey Vortex" attempts scored in
-    # the 0.65-0.84 band and never triggered - genuine wake attempts landing just
-    # under 0.8, not background noise (median score across the whole session was
-    # 0.46). Lowered to match BARGE_IN_THRESHOLD (0.75), which had already proven
-    # reliable in live use at that level the same day. Trade-off, not a free
-    # lunch: standby false-positives were already a known open issue before this
-    # change (see IMPLEMENTED.md) and a lower threshold makes that more likely,
-    # not less - worth it because a wake word that doesn't wake is a worse failure
-    # mode than an occasional unwanted activation.
-    wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.75))
-    barge_in_threshold: float = field(default_factory=lambda: _float_env('VORTEX_BARGE_IN_THRESHOLD', 0.75))
+    # never against real human voice at typical laptop-mic distance. First
+    # lowered to 0.75 on 2026-08-16 after 74 real attempts landed in the
+    # 0.65-0.84 band; that helped (two confirmed real triggers at 0.98+) but
+    # real attempts kept landing at 0.70-0.74 and still missing. A full-session
+    # histogram (397 scored frames) showed no clean valley between "background"
+    # and "genuine speech" - real attempts appear spread across roughly
+    # 0.5-0.95, not clustered tightly above some obvious cutoff, meaning this
+    # wake model's confidence for this user's actual voice runs lower overall
+    # than it did for the synthetic training clips. Lowered further to 0.65 as
+    # a pragmatic, evidence-based (not arbitrary) compromise - it is not a
+    # clean fix, and the real fix is very likely retraining/revalidating the
+    # wake model against real voice samples from this user rather than only
+    # synthetic TTS (tools/wakeword/build_hey_vortex.py), not just tuning this
+    # number further. Trade-off, not a free lunch: standby false-positives
+    # were already a known open issue before either change (see
+    # IMPLEMENTED.md) and each reduction makes that more likely - accepted
+    # because a wake word that doesn't wake is a worse failure mode.
+    wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.65))
+    # Kept equal to wake_threshold, not independently set - main.py's own comment
+    # on BARGE_IN_THRESHOLD documents this as deliberate ("NOT stricter than
+    # WAKE_THRESHOLD, on purpose"): an earlier attempt at a *higher* bar for
+    # barge-in broke real interruptions, since barge-in is inherently harder to
+    # score high on (the mic also hears our own speakers). Lowering wake_threshold
+    # without lowering this too would have silently reintroduced that same bug.
+    barge_in_threshold: float = field(default_factory=lambda: _float_env('VORTEX_BARGE_IN_THRESHOLD', 0.65))
     wake_cooldown: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_COOLDOWN', 1.5))
     wake_watchdog_timeout: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_WATCHDOG_TIMEOUT', 5.0))
 

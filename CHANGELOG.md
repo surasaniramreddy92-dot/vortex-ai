@@ -8,6 +8,24 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Fixed (second pass)
+- **0.75 still wasn't low enough** - real attempts kept landing at 0.70-0.74
+  and missing. A full-session histogram (397 scored frames) showed no clean
+  valley between "background" and "genuine speech": real attempts spread
+  roughly across 0.5-0.95 rather than clustering tightly above one obvious
+  cutoff, meaning this wake model's confidence for this user's actual voice
+  runs lower overall than it did for the synthetic clips it was validated
+  against. Lowered `WAKE_THRESHOLD` further to `0.65` - a pragmatic,
+  evidence-based compromise, not a clean fix. The real fix is very likely
+  retraining/revalidating the wake model against this user's real voice
+  (`tools/wakeword/build_hey_vortex.py` currently only uses synthetic TTS
+  clips), which hasn't been done. Also lowered `BARGE_IN_THRESHOLD` to match
+  (`0.65`) - it was about to become *stricter* than `WAKE_THRESHOLD`, which
+  `main.py`'s own comment on that constant documents as a previously-fixed
+  bug (an earlier stricter-barge-in attempt broke real interruptions, since
+  barge-in is inherently harder to score high on). Verified restart caught a
+  wake immediately (score 0.732 - would have missed both 0.75 and 0.8).
+
 ### Fixed
 - **`WAKE_THRESHOLD` (0.8) was too strict for real human voice, causing "Hey
   Vortex" to frequently not register at all** - 0.8 was calibrated only
