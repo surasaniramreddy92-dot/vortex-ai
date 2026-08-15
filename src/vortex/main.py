@@ -46,6 +46,7 @@ _cfg = VortexConfig.from_env()
 ROOT = _cfg.root
 VOICE = _cfg.voice
 USER_NAME = _cfg.user_name
+TTS_VOLUME = _cfg.tts_volume
 # Custom-trained model (tools/wakeword/build_hey_vortex.py) so the phrase matches the assistant's name.
 WAKE_WORD = _cfg.wake_word
 # Calibrated against held-out synthetic clips (tools/wakeword/validate_hey_vortex.py),
@@ -206,6 +207,7 @@ class Vortex:
 
     def _play(self, path):
         pygame.mixer.music.load(path)
+        pygame.mixer.music.set_volume(TTS_VOLUME)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
             if self.stop_speaking.is_set() or not self.running:

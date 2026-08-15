@@ -66,6 +66,34 @@ commit diffs. Phase-by-phase status (not date-based) lives in
   `recognize_google()`. Also fixed `Capture error:` log lines that had been
   silently empty this entire project - `sr.UnknownValueError`'s `str()` is
   empty by design; the log now includes the exception type name too.
+- **Diagnosed why "wait wait wait" and even a repeated "Hey Vortex" didn't
+  interrupt VORTEX during a real long response**: live log evidence showed
+  zero `[diag]` score lines - not even near-misses - during a 25-second
+  window while the user was actively trying to interrupt. On a laptop the
+  mic and speakers sit close together, so VORTEX's own TTS output dominates
+  whatever the mic hears while it's talking; `_agc` cannot fix this because
+  it scales the whole mixed signal uniformly and has no way to separate two
+  overlapping voices in one channel (that requires true acoustic echo
+  cancellation, not implemented). Mitigated by turning VORTEX's own output
+  down while speaking - `VORTEX_TTS_VOLUME` (default `0.6`) is now wired
+  through `VortexConfig` into `pygame.mixer.music.set_volume()` in `_play()`.
+  This is a partial mitigation (better self-noise ratio for "Hey Vortex"
+  specifically), not a fix for generic words like "wait" - those are not,
+  and still are not, checked at all; only the trained wake phrase triggers
+  an interrupt. Full AEC would be required to make arbitrary speech
+  interrupt reliably, and is out of scope for now.
+- Confirmed (while investigating the above) that the AGC's noise floor
+  starts every process launch at a hardcoded `250.0` and only decays back
+  toward the true ambient floor via a slow exponential average (2%/update)
+  - a deliberate asymmetry (see `_agc`'s docstring) since starting too low
+  would let the floor get permanently stuck, boosting noise into false
+  triggers. Side effect: for roughly 1-2 minutes after every restart, wake
+  scores run measurably lower than steady-state (observed live: `noise_floor`
+  201 -> 102 -> 78 -> 21 -> 0 over ~2.5 minutes, with scores climbing
+  alongside it). Not a regression and not related to the self-noise issue
+  above - VORTEX runs as a persistent background process in normal use, so
+  this transient is only visible right after a fresh restart, which is
+  exactly when today's re-testing kept hitting it.
 
 ### Changed
 - **Started the modular refactor** (`docs/REFACTOR_PLAN.md` Step 1), on hold
@@ -84,6 +112,16 @@ commit diffs. Phase-by-phase status (not date-based) lives in
   (`test_two_instances_are_independent_snapshots`) written specifically to
   catch it if it comes back. `legacy/main_working_baseline.py` added as the
   verbatim (byte-diffed) pre-refactor safety copy per the standing rule.
+- **Refactor Step 2** (`docs/REFACTOR_PLAN.md`): `main.py`'s module-level
+  constants now come from one `VortexConfig` instance instead of their own
+  scattered `os.getenv(...)` calls (19 values, including a previously-missed
+  `VORTEX_EMBED_MODEL` lookup inside `_warm_up_models`). Still module-level
+  constants, not `self.config.*` access throughout the class - that's a
+  separate, larger change (Step 3+, extracting subsystems into their own
+  files). Verified programmatically that all 19 values match both
+  `config.py`'s independent computation and the exact hardcoded values
+  `main.py` had before this change - zero drift - plus a live restart
+  (greets, connects to Qdrant, warms up both Ollama models identically).
 
 ### Added
 - `CHANGELOG.md` (this file).
