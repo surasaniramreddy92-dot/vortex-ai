@@ -1,6 +1,7 @@
 # VORTEX main.py - custom wake word + barge-in + multi-turn session build
 # Windows + ONNX-only wake architecture
 import asyncio
+import collections
 import contextlib
 import datetime
 import logging
@@ -292,6 +293,14 @@ class Vortex:
                     interrupted = True
         finally:
             self.speaking.clear()
+        # A chunk cancelled mid-synthesis (_synth returning None because
+        # stop_speaking got set while it was still awaiting edge-tts) never
+        # reaches this loop's own interrupted=True checks - it's discarded by
+        # the producer before ever reaching the queue. Checking the flag
+        # directly here catches that path too, so "Speech interrupted" is
+        # logged whenever stop_speaking ended up set, regardless of exactly
+        # which stage the interruption landed in.
+        interrupted = interrupted or self.stop_speaking.is_set()
         if interrupted:
             self.log('Speech interrupted')
         return not interrupted
@@ -379,17 +388,81 @@ class Vortex:
         boosted = np.clip(samples.astype(np.float64) * gain, -32768, 32767).astype(np.int16)
         return sr.AudioData(boosted.tobytes(), audio.sample_rate, audio.sample_width)
 
+    def _record_command(self, timeout, phrase_time_limit, samplerate=16000):
+        """Record one command via sounddevice - the same audio path the wake
+        detector uses - instead of a separate PyAudio-based sr.Microphone().
+
+        Evidence this split path was the real problem, not VAD timing: across
+        many real captures on 2026-08-16, sr.Microphone() raw RMS was mostly
+        40-1000 and rarely transcribed, for the *same* physical mic, user, and
+        moment where the wake stream was reliably scoring strong signal. A
+        standalone probe confirmed this capture path itself is sound (max RMS
+        8081 against a real spoken phrase, played and captured independently
+        of the app).
+
+        Energy-based VAD, calibrated fresh against a brief ambient sample each
+        call. Requires ONSET_FRAMES consecutive frames above threshold before
+        committing to "speech started" (a first cut without this required only
+        one frame, and a single noise blip - a click, a breath - was enough to
+        trigger recording, then time out on silence before real speech even
+        began, producing a short, near-silent clip exactly like the ones that
+        kept failing). A short pre-roll buffer is prepended so the committed
+        onset doesn't clip the first syllable."""
+        frame_len = max(1, samplerate // 33)  # ~30ms frames
+        onset_frames_needed = 4  # ~120ms of sustained energy before committing
+        silence_frames_needed = max(1, int(0.8 * samplerate / frame_len))
+        calib_frames_needed = max(1, int(0.3 * samplerate / frame_len))
+        preroll_len = onset_frames_needed + 2
+        with sd.InputStream(channels=1, samplerate=samplerate, dtype='int16', blocksize=frame_len) as stream:
+            calib = []
+            while len(calib) < calib_frames_needed:
+                data, _ = stream.read(frame_len)
+                calib.append(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+            energy_threshold = max((float(np.median(calib)) if calib else 0.0) * 2.5, 60.0)
+
+            preroll = collections.deque(maxlen=preroll_len)
+            frames = []
+            speaking = False
+            onset_run = 0
+            silence_run = 0
+            start = time.monotonic()
+            while True:
+                data, _ = stream.read(frame_len)
+                rms = np.sqrt(np.mean(data.astype(np.float64) ** 2))
+                loud = rms > energy_threshold
+                if not speaking:
+                    preroll.append(data.copy())
+                    onset_run = onset_run + 1 if loud else 0
+                    if onset_run >= onset_frames_needed:
+                        speaking = True
+                        silence_run = 0
+                        frames.extend(preroll)
+                        preroll.clear()
+                    elif time.monotonic() - start > timeout:
+                        return None
+                else:
+                    frames.append(data.copy())
+                    silence_run = 0 if loud else silence_run + 1
+                    if silence_run >= silence_frames_needed:
+                        break
+                    if (len(frames) * frame_len / samplerate) > phrase_time_limit:
+                        break
+        if not frames:
+            return None
+        return np.concatenate(frames, axis=0).flatten().astype(np.int16).tobytes()
+
     def capture_command(self, timeout=8):
         try:
             with self._own_mic():
-                with sr.Microphone() as src:
-                    self.recognizer.adjust_for_ambient_noise(src, duration=0.3)
-                    audio = self.recognizer.listen(src, timeout=timeout, phrase_time_limit=8)
-            # Diagnostic only (temporary - remove once the frequent post-"Yes Boss?"
-            # UnknownValueError failures are root-caused): logs what was actually
-            # captured even when recognize_google() can't transcribe it, so a near-
-            # silent/garbled buffer (mic handoff timing) can be told apart from a
-            # buffer with real signal that Google just couldn't parse.
+                raw_bytes = self._record_command(timeout=timeout, phrase_time_limit=8)
+            if raw_bytes is None:
+                raise sr.WaitTimeoutError('listening timed out while waiting for phrase to start')
+            audio = sr.AudioData(raw_bytes, 16000, 2)
+            # Diagnostic only (temporary - remove once real-world reliability is
+            # confirmed on this new capture path): logs what was actually
+            # captured even when recognize_google() can't transcribe it, so a
+            # near-silent/garbled buffer can be told apart from a buffer with
+            # real signal that Google just couldn't parse.
             raw = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
             raw_rms = np.sqrt(np.mean(raw.astype(np.float64) ** 2)) if len(raw) else 0.0
             duration = len(raw) / audio.sample_rate if audio.sample_rate else 0.0
@@ -740,8 +813,22 @@ class Vortex:
 
     def _active_session(self):
         """Keep listening for follow-ups (confirmations, next command) without
-        requiring the wake word again, until SESSION_TIMEOUT of silence."""
+        requiring the wake word again, until SESSION_TIMEOUT of silence.
+
+        Checks stop_speaking before each new capture_command() call - without
+        this, a barge-in that interrupts execute() mid-response (stop_speaking
+        set, 'barge_in' queued in self.events) was invisible here: this loop
+        would immediately start a brand-new, full-length capture_command()
+        window instead of returning control to _worker()'s outer loop, which
+        is the only place that actually speaks "Yes Boss?" and clears
+        stop_speaking for the next turn. Live evidence: a barge-in that
+        genuinely cut the current response instantly still took 15-25+
+        seconds to yield the floor, because this loop kept right on listening
+        for an unrelated new command, deaf to the pending interrupt, until
+        that unrelated capture finally timed out on its own."""
         while self.running:
+            if self.stop_speaking.is_set():
+                return
             cmd = self.capture_command(timeout=SESSION_TIMEOUT)
             if cmd is None:
                 self.log('Session timed out, returning to standby')
