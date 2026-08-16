@@ -8,6 +8,16 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Changed (sixth pass)
+- **Barge-in now speaks a distinct acknowledgment** - "Yes Boss, I'm
+  listening." instead of the same generic "Yes Boss?" used for a fresh wake.
+  Direct user feedback: hearing "Yes Boss?" right after VORTEX's own
+  sentence gets cut off mid-word reads ambiguously (did it hear the
+  interruption, or is this a coincidence?); the barge-in-specific phrase
+  explicitly confirms the cutoff registered. Verified live: "Barge-in
+  triggered" to "Speaking: Yes Boss, I'm listening." in 57ms, consistent
+  with every other timing measurement since the fourth-pass interrupt fix.
+
 ### Fixed (fifth pass - tested live before pushing this time)
 - Command capture's energy threshold had no upper bound - live evidence: one
   real capture calibrated to `energy_threshold=1947` purely from ambient
