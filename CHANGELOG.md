@@ -8,6 +8,48 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Fixed (third pass, after a reboot)
+- **Barge-in could be logged as "triggered" and then take 15-25+ seconds to
+  actually silence VORTEX** - two real, distinct interrupt-propagation gaps,
+  found by adding precise timing diagnostics rather than guessing: (1)
+  `ask_llm_stream`/`_stream_llm_answer` consumed Ollama's token stream with a
+  plain `for part in stream:`, which blocks on the network read for the next
+  token and only re-checks `stop_speaking` once one arrives - deadly on a
+  cold-loaded model (this session's model failed to warm at boot because
+  Ollama itself wasn't up yet). (2) `_synth()` awaited the edge-tts network
+  call directly (`run_until_complete`), same blind spot for however long one
+  chunk's synthesis took - live evidence: a barge-in that landed while a
+  chunk was still being synthesized (not yet playing) took ~9s to register,
+  matching one edge-tts round trip almost exactly. Both fixed by applying the
+  same producer-thread-plus-polled-queue pattern `_speak_chunks` already used
+  for TTS playback: a background thread does the blocking network I/O, and
+  the generator polls a queue every 0.1s, checking `stop_speaking` on every
+  poll regardless of whether new data has arrived. New shared helper
+  `_poll_stream` used by both LLM call sites; `_synth` now runs synthesis as
+  a cancellable `asyncio` task instead of a plain awaited coroutine.
+- Added a hard cap on response length - `VORTEX_LLM_MAX_TOKENS` (default 60,
+  via Ollama's `num_predict`) - independent of the system prompt's "short
+  spoken sentences" instruction, which the model doesn't reliably follow
+  (observed: single-sentence answers running 230+ characters, ~14s to speak).
+  A shorter response directly shrinks the window where VORTEX's own voice can
+  mask a real "Hey Vortex" barge-in attempt (the near-field self-noise
+  problem diagnosed earlier today) - unlike volume or threshold tuning, this
+  doesn't trade off against anything else being audible or sensitive enough.
+  Verified respected at the Ollama level directly; 60 tokens (~45-50 words)
+  turned out not to be a very aggressive cap in practice for factual
+  questions - a real, tunable lever, not a complete fix on its own.
+- Added temporary timing diagnostics: `_play()` now logs how long each chunk
+  actually played and whether it was cut short by `stop_speaking`. This is
+  what surfaced both bugs above - a barge-in was logged as "triggered" with
+  no matching `_play` log line at all for the chunk in flight, proving the
+  interrupt was landing before `_play()` was ever reached, not inside it.
+- Found in the same session, not yet investigated: VORTEX's own scheduled-
+  task autostart raced Ollama's own startup after a reboot - "Model warm-up
+  failed... Failed to connect to Ollama" appeared at boot, meaning the first
+  real request of the day paid a full cold-load cost. Unlike the Postgres/
+  Qdrant connections (already timeout-guarded), warm-up failure isn't
+  currently retried once Ollama does come up.
+
 ### Fixed (second pass)
 - **0.75 still wasn't low enough** - real attempts kept landing at 0.70-0.74
   and missing. A full-session histogram (397 scored frames) showed no clean

@@ -37,6 +37,7 @@ def test_defaults_match_main_py():
     assert cfg.history_turns == 10
     assert cfg.summary_max_chars == 12000
     assert cfg.llm_model == 'llama3.2:1b'
+    assert cfg.llm_max_tokens == 60
     assert 'VORTEX' in cfg.system_prompt
     assert cfg.postgres_dsn == 'dbname=vortex user=vortex password=vortex_local_dev host=localhost'
     assert cfg.qdrant_url == 'http://localhost:6333'

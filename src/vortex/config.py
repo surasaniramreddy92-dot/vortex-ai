@@ -96,6 +96,18 @@ class VortexConfig:
     summary_max_chars: int = field(default_factory=lambda: _int_env('VORTEX_SUMMARY_MAX_CHARS', 12000))
 
     llm_model: str = field(default_factory=lambda: os.getenv('VORTEX_MODEL', 'llama3.2:1b'))
+    # Hard cap on response length (Ollama's num_predict), independent of the
+    # system prompt's "short spoken sentences" instruction, which the model
+    # doesn't reliably follow - live evidence 2026-08-16: single-sentence
+    # answers running 230+ characters, ~14s to speak as one TTS chunk. Longer
+    # speech directly means a longer window where VORTEX's own voice can mask
+    # a real "Hey Vortex" barge-in attempt (the near-field self-noise problem -
+    # see tts_volume above); a live test during exactly this kind of long
+    # response showed zero wake-model scores for the full 14s, not just a late
+    # trigger. Capping length is a direct, acoustically-certain way to shrink
+    # that window - unlike volume or threshold tuning, it doesn't trade off
+    # against anything else being audible or sensitive enough.
+    llm_max_tokens: int = field(default_factory=lambda: _int_env('VORTEX_LLM_MAX_TOKENS', 60))
     system_prompt: str = field(default_factory=lambda: os.getenv(
         'VORTEX_SYSTEM_PROMPT',
         'You are VORTEX, a concise desktop AI assistant. You are heard, not read, '
