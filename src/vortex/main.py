@@ -78,6 +78,7 @@ AGC_NOISE_MARGIN = _cfg.agc_noise_margin
 SESSION_TIMEOUT = _cfg.session_timeout
 MODEL = _cfg.llm_model
 SYSTEM_PROMPT = _cfg.system_prompt
+LLM_MAX_TOKENS = _cfg.llm_max_tokens
 LOG_DIR = _cfg.log_dir
 os.makedirs(LOG_DIR, exist_ok=True)
 DATA_DIR = _cfg.data_dir
@@ -188,13 +189,29 @@ class Vortex:
         Logs the chunk here (not just in speak()) so speak_stream() - every LLM
         and document answer - is actually visible in the log too; previously only
         speak()'s deterministic replies ("Yes Boss?", date/time) were logged at
-        all, leaving every AI-generated response completely unlogged."""
+        all, leaving every AI-generated response completely unlogged.
+
+        Runs the edge-tts network call as a cancellable task instead of a plain
+        `run_until_complete`, polling stop_speaking every 0.1s - a plain await
+        blocks until the network call itself returns, deaf to stop_speaking in
+        the meantime. Live evidence this mattered: a barge-in landing while a
+        chunk was still being synthesized (not yet playing) took ~9s to
+        actually register, exactly one edge-tts round trip's worth of delay,
+        even after fixing the equivalent gap in the LLM token stream."""
         self.log(f'Speaking: {text}')
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         path = tmp.name
         tmp.close()
+        task = loop.create_task(edge_tts.Communicate(text, VOICE).save(path))
         try:
-            loop.run_until_complete(edge_tts.Communicate(text, VOICE).save(path))
+            while not task.done():
+                if self.stop_speaking.is_set() or not self.running:
+                    task.cancel()
+                    loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+                    self._unlink(path)
+                    return None
+                loop.run_until_complete(asyncio.wait({task}, timeout=0.1))
+            task.result()
             return path
         except Exception as e:
             self.log(f'TTS synth error: {e}')
@@ -209,11 +226,22 @@ class Vortex:
         pygame.mixer.music.load(path)
         pygame.mixer.music.set_volume(TTS_VOLUME)
         pygame.mixer.music.play()
+        t0 = time.monotonic()
+        stopped_early = False
         while pygame.mixer.music.get_busy():
             if self.stop_speaking.is_set() or not self.running:
                 pygame.mixer.music.stop()
+                stopped_early = True
                 break
             time.sleep(0.05)
+        # Diagnostic only (temporary): a barge-in logged as "triggered" today was
+        # observed taking 15-25s to actually silence VORTEX, even after fixing the
+        # one confirmed cause (LLM token stream not polled for stop_speaking). This
+        # pins down whether _play() itself ever sees the flag - if playback always
+        # ends here with stopped_early=False regardless of when stop_speaking was
+        # set elsewhere, the bug is in this loop or the flag's visibility, not in
+        # how long synthesis/generation took upstream.
+        self.log(f'[diag] _play took {time.monotonic()-t0:.2f}s stopped_early={stopped_early}')
         pygame.mixer.music.unload()
 
     def _speak_chunks(self, chunks):
@@ -378,6 +406,46 @@ class Vortex:
 
     # ---------- reasoning ----------
 
+    def _poll_stream(self, stream):
+        """Consume an Ollama streaming response on a background thread and yield
+        tokens through a polled queue, instead of a plain `for part in stream`.
+
+        A plain for-loop blocks on the network read for the *next* token, and
+        only re-checks stop_speaking once one arrives - fine when Ollama is
+        warm, but this session's model failed to warm at startup (Ollama
+        wasn't up yet when VORTEX tried), so the first real request paid a
+        cold-load cost mid-generation. Live evidence: a barge-in was logged as
+        "triggered" but the current answer kept playing for another ~20s
+        before "yielding the floor" actually appeared - the generator was
+        blocked waiting on Ollama's next token the whole time, deaf to
+        stop_speaking. Mirrors the same producer-thread-plus-polled-queue
+        pattern _speak_chunks already uses for TTS, so stop_speaking is now
+        checked at least every 0.1s regardless of how slow Ollama is."""
+        token_q = queue.Queue(maxsize=8)
+
+        def pump():
+            try:
+                for part in stream:
+                    token_q.put(part['message']['content'])
+            except Exception as e:
+                token_q.put(e)
+            finally:
+                token_q.put(_STOP)
+
+        threading.Thread(target=pump, daemon=True).start()
+        while True:
+            if self.stop_speaking.is_set() or not self.running:
+                return
+            try:
+                item = token_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is _STOP:
+                return
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
     def ask_llm_stream(self, query):
         """Yield reply text as Ollama produces it, so speech can start early and
         generation stops the moment we are interrupted."""
@@ -385,16 +453,14 @@ class Vortex:
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.memory.recent(HISTORY_TURNS)
         reply = ''
         try:
-            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m')
+            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m',
+                                 options={'num_predict': LLM_MAX_TOKENS})
         except Exception as e:
             self.log(f'LLM error: {e}')
             yield 'Sorry Boss, my reasoning engine is currently offline.'
             return
         try:
-            for part in stream:
-                if self.stop_speaking.is_set() or not self.running:
-                    break
-                token = part['message']['content']
+            for token in self._poll_stream(stream):
                 reply += token
                 yield token
         except Exception as e:
@@ -414,16 +480,16 @@ class Vortex:
         in, tokens out, stoppable mid-generation exactly like ask_llm_stream."""
         messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_content}]
         try:
-            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m')
+            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m',
+                                 options={'num_predict': LLM_MAX_TOKENS})
         except Exception as e:
             self.log(f'Document LLM error: {e}')
             yield 'Sorry Boss, my reasoning engine is currently offline.'
             return
         try:
-            for part in stream:
-                if self.stop_speaking.is_set() or not self.running:
-                    break
-                yield part['message']['content']
+            yield from self._poll_stream(stream)
+        except Exception as e:
+            self.log(f'Document LLM stream error: {e}')
         finally:
             with contextlib.suppress(Exception):
                 stream.close()
