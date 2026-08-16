@@ -2,6 +2,15 @@
 
 Runs without a microphone or speakers: playback is stubbed with a sleep, and
 synthesis is stubbed unless --live is passed (which exercises real edge-tts).
+
+Updated for docs/REFACTOR_PLAN.md Step 3: chunking/synthesis/playback now
+live on Vortex.tts (voice/tts.py) instead of directly on Vortex, so those
+three monkeypatches target v.tts.* instead of v.* directly. speak_stream,
+speaking/stop_speaking, _worker, events, and stop() are unchanged - Vortex
+still exposes all of those (as thin passthroughs/properties over the
+extracted voice/ modules), so everything else below is untouched. See also
+tests/unit/test_barge_in.py for the pytest-discoverable port of these same
+scenarios against the new module structure directly.
 """
 import os
 import sys
@@ -26,8 +35,8 @@ def make_vortex():
     v = Vortex()
     v.played = []
     if not LIVE:
-        v._synth = lambda loop, text: text          # pass the text through as the "file"
-        v._unlink = lambda path: None
+        v.tts._synth = lambda loop, text: text          # pass the text through as the "file"
+        v.tts._unlink = lambda path: None
 
     def fake_play(path):
         v.played.append(path)
@@ -36,14 +45,14 @@ def make_vortex():
             if v.stop_speaking.is_set() or not v.running:
                 return
             time.sleep(0.05)
-    v._play = fake_play
+    v.tts._play = fake_play
     return v
 
 
 print('--- chunking ---')
 v = make_vortex()
-chunks = list(v._chunk_stream(iter(['Java is a language. ', 'It runs on the JVM. ',
-                                    'It is **strongly** typed and verbose.'])))
+chunks = list(v.tts._chunk_stream(iter(['Java is a language. ', 'It runs on the JVM. ',
+                                        'It is **strongly** typed and verbose.'])))
 check('splits a stream into multiple chunks', len(chunks) >= 2, repr(chunks))
 check('strips markdown', all('*' not in c for c in chunks), repr(chunks))
 check('loses no words', ' '.join(chunks) ==
@@ -51,7 +60,7 @@ check('loses no words', ' '.join(chunks) ==
       repr(' '.join(chunks)))
 
 v = make_vortex()
-long_chunks = list(v._chunk_stream(iter(['word ' * 300])))
+long_chunks = list(v.tts._chunk_stream(iter(['word ' * 300])))
 check('bounds unpunctuated text', all(len(c) <= MAX_CHUNK for c in long_chunks),
       f'max={max(len(c) for c in long_chunks)}')
 

@@ -1,7 +1,5 @@
 # VORTEX main.py - custom wake word + barge-in + multi-turn session build
 # Windows + ONNX-only wake architecture
-import asyncio
-import collections
 import contextlib
 import datetime
 import logging
@@ -10,27 +8,27 @@ import queue
 import re
 import subprocess
 import sys
-import tempfile
 import threading
-import time
 
-import numpy as np
 import psutil
 import pygame
 import pystray
-import sounddevice as sd
 import speech_recognition as sr
 from PIL import Image, ImageDraw
 from dotenv import load_dotenv
-import edge_tts
 import ollama
-from openwakeword.model import Model
 
 from .memory import MemoryStore
 from .documents import resolve_document, extract_text, build_document_prompt
 from .browser import BrowserAgent
 from .rag import RagStore, build_rag_prompt
 from .config import VortexConfig
+from .voice.barge_in import BargeIn
+from .voice.audio import AudioProcessor
+from .voice.wake import WakeDetector
+from .voice.tts import TextToSpeech, MAX_CHUNK
+from .voice.stt import SpeechToText
+from .voice.session import Session
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
@@ -59,12 +57,14 @@ WAKE_THRESHOLD = _cfg.wake_threshold
 # score high on (the mic also hears our own speakers, diluting the user's voice) -
 # so making it a *higher* bar than standby (an earlier 0.9 attempt) just made
 # genuine interruptions fail. Revisit with real numbers from the score/noise_floor
-# diagnostic logging in _on_audio if false barge-ins actually start showing up.
+# diagnostic logging in voice/wake.py's on_audio if false barge-ins actually start
+# showing up.
 BARGE_IN_THRESHOLD = _cfg.barge_in_threshold
 WAKE_COOLDOWN = _cfg.wake_cooldown
 # Safety net: callbacks should fire every ~80ms while listening. If none arrive for
 # this long outside of an active SpeechRecognition handoff, the stream is presumed
-# dead and gets rebuilt - see _recover_wake_stream's docstring for why this is needed.
+# dead and gets rebuilt - see voice/wake.py's WakeDetector.recover_stream docstring
+# for why this is needed.
 WAKE_WATCHDOG_TIMEOUT = _cfg.wake_watchdog_timeout
 # Laptop mics are quiet by default; boost normal speaking volume up to a target
 # level before wake-word inference so you don't have to raise your voice. Gated
@@ -90,18 +90,16 @@ SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-bac
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 pygame.mixer.init()
 
-# A chunk boundary: sentence punctuation followed by space, or a line break.
-BREAK = re.compile(r'(?:[.!?;:]["\')\]]?\s+|\n+)')
-MARKUP = re.compile(r'[*_`#]+')
-MIN_CHUNK = 25
-MAX_CHUNK = 320
+# Used only by _poll_stream's token queue below - voice/tts.py has its own,
+# independent _STOP sentinel for its own audio queue. Two separate objects on
+# purpose: each queue's consumer only ever compares against the sentinel its
+# own producer put there, so there's no need (and no benefit) to share one.
 _STOP = object()
 
 class Vortex:
     def __init__(self):
         self.running = True
         self.icon = None
-        self.stream = None
         self.recognizer = sr.Recognizer()
         self.current_pid = os.getpid()
         self.awaiting_confirmation = None
@@ -115,16 +113,48 @@ class Vortex:
             # simpler truncated-document approach rather than failing to start.
             self.log(f'RAG store unavailable, falling back to plain document reads: {e}')
             self.rag = None
-        # speaking: TTS is on air. stop_speaking: cut it off now.
-        # capturing: SpeechRecognition owns the mic, so the wake stream stands down.
-        self.speaking = threading.Event()
-        self.stop_speaking = threading.Event()
+
+        # ---------- voice subsystem (docs/REFACTOR_PLAN.md Step 3) ----------
+        # barge_in: shared speaking/stop_speaking Events, checked across wake
+        # detection, TTS playback, and LLM token streaming (_poll_stream below).
+        # capturing: SpeechRecognition/the sounddevice capture owns the mic, so
+        # the wake stream stands down meanwhile.
+        self.barge_in = BargeIn()
         self.capturing = threading.Event()
         self.events = queue.Queue()
-        self.last_wake = 0.0
-        self.noise_floor = 250.0
-        self.last_audio_at = time.monotonic()
-        self.wake_model = Model(wakeword_models=[WAKE_WORD], inference_framework='onnx')
+
+        self.audio = AudioProcessor(AGC_TARGET_RMS, AGC_MAX_GAIN, AGC_NOISE_MARGIN)
+        self.wake = WakeDetector(
+            wake_word_path=WAKE_WORD, wake_threshold=WAKE_THRESHOLD,
+            barge_in_threshold=BARGE_IN_THRESHOLD, wake_cooldown=WAKE_COOLDOWN,
+            audio_processor=self.audio, barge_in=self.barge_in, capturing=self.capturing,
+            events=self.events, log=self.log, is_running=lambda: self.running)
+        self.tts = TextToSpeech(voice=VOICE, tts_volume=TTS_VOLUME, barge_in=self.barge_in,
+                                 log=self.log, is_running=lambda: self.running)
+        self.stt = SpeechToText(
+            recognizer=self.recognizer, capturing=self.capturing, agc_target_rms=AGC_TARGET_RMS,
+            stop_wake_stream=self.wake.stop_stream, recover_wake_stream=self.wake.recover_stream,
+            log=self.log)
+        # Callables below are lambdas closing over `self` and calling back
+        # through Vortex's own (dynamically-dispatched) methods, not pre-bound
+        # references captured once - so instance-level monkeypatching of
+        # v.speak / v.capture_command / v.execute / v.greet (as
+        # tools/test_barge_in.py's worker-dispatch scenario does) is still
+        # picked up at call time, exactly as it was before this extraction.
+        self.session = Session(
+            events=self.events, barge_in=self.barge_in, session_timeout=SESSION_TIMEOUT,
+            wake_watchdog_timeout=WAKE_WATCHDOG_TIMEOUT,
+            capture_command=lambda timeout=8: self.capture_command(timeout=timeout),
+            execute=lambda cmd: self.execute(cmd),
+            speak=lambda text: self.speak(text),
+            greet=lambda: self.greet(),
+            warm_up=lambda: self._warm_up_models(),
+            get_last_audio_at=lambda: self.wake.last_audio_at,
+            recover_wake_stream=self.wake.recover_stream,
+            is_capturing=self.capturing.is_set,
+            clear_awaiting_confirmation=self._clear_awaiting_confirmation,
+            log=self.log, is_running=lambda: self.running)
+
         self.protected = {
             'python.exe','pythonw.exe','ollama.exe','explorer.exe','winlogon.exe','csrss.exe',
             'services.exe','lsass.exe','dwm.exe','system','taskhostw.exe','shellhost.exe'
@@ -144,353 +174,41 @@ class Vortex:
     def log(self, msg):
         logging.info(msg)
 
-    def _agc(self, audio_i16):
-        """Boost voice-level audio toward a target RMS before wake-word inference.
-        Tracks a slow-moving ambient noise floor and only boosts frames that stand
-        out above it - steady background noise gets left alone (and folded into
-        the floor estimate) instead of amplified into a false wake trigger."""
-        rms = np.sqrt(np.mean(audio_i16.astype(np.float64) ** 2))
-        if rms < self.noise_floor * AGC_NOISE_MARGIN:
-            self.noise_floor = 0.98 * self.noise_floor + 0.02 * rms
-            return audio_i16
-        gain = min(AGC_MAX_GAIN, AGC_TARGET_RMS / rms)
-        if gain <= 1.0:
-            return audio_i16
-        return np.clip(audio_i16.astype(np.float64) * gain, -32768, 32767).astype(np.int16)
+    def _clear_awaiting_confirmation(self):
+        self.awaiting_confirmation = None
 
-    # ---------- speech output ----------
+    # ---------- speaking/stop_speaking: back-compat passthroughs ----------
+    # Kept as properties (not moved-and-gone) because they're checked/set from
+    # several places still in this file (execute()'s callers, tray callbacks,
+    # _poll_stream/ask_llm_stream's barge-in-aware LLM streaming below) and by
+    # external callers (tools/test_barge_in.py) that predate this extraction -
+    # same two Event objects, now owned by self.barge_in.
 
-    def _chunk_stream(self, fragments):
-        """Turn a stream of text fragments into speakable sentence-sized chunks."""
-        buf = ''
-        for fragment in fragments:
-            if self.stop_speaking.is_set() or not self.running:
-                break
-            buf += fragment
-            while True:
-                # First break long enough to be worth speaking on its own.
-                m = next((b for b in BREAK.finditer(buf) if b.end() >= MIN_CHUNK), None)
-                if m:
-                    chunk, buf = buf[:m.end()], buf[m.end():]
-                elif len(buf) > MAX_CHUNK:
-                    cut = buf.rfind(' ', 0, MAX_CHUNK)
-                    cut = cut if cut > MIN_CHUNK else MAX_CHUNK
-                    chunk, buf = buf[:cut], buf[cut:]
-                else:
-                    break
-                chunk = MARKUP.sub('', chunk).strip()
-                if chunk:
-                    yield chunk
-        buf = MARKUP.sub('', buf).strip()
-        if buf:
-            yield buf
+    @property
+    def speaking(self):
+        return self.barge_in.speaking
 
-    def _synth(self, loop, text):
-        """Render one chunk to an mp3 and return its path, or None if it failed.
-        Logs the chunk here (not just in speak()) so speak_stream() - every LLM
-        and document answer - is actually visible in the log too; previously only
-        speak()'s deterministic replies ("Yes Boss?", date/time) were logged at
-        all, leaving every AI-generated response completely unlogged.
+    @property
+    def stop_speaking(self):
+        return self.barge_in.stop_speaking
 
-        Runs the edge-tts network call as a cancellable task instead of a plain
-        `run_until_complete`, polling stop_speaking every 0.1s - a plain await
-        blocks until the network call itself returns, deaf to stop_speaking in
-        the meantime. Live evidence this mattered: a barge-in landing while a
-        chunk was still being synthesized (not yet playing) took ~9s to
-        actually register, exactly one edge-tts round trip's worth of delay,
-        even after fixing the equivalent gap in the LLM token stream."""
-        self.log(f'Speaking: {text}')
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-        path = tmp.name
-        tmp.close()
-        task = loop.create_task(edge_tts.Communicate(text, VOICE).save(path))
-        try:
-            while not task.done():
-                if self.stop_speaking.is_set() or not self.running:
-                    task.cancel()
-                    loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
-                    self._unlink(path)
-                    return None
-                loop.run_until_complete(asyncio.wait({task}, timeout=0.1))
-            task.result()
-            return path
-        except Exception as e:
-            self.log(f'TTS synth error: {e}')
-            self._unlink(path)
-            return None
-
-    def _unlink(self, path):
-        try: os.remove(path)
-        except OSError: pass
-
-    def _play(self, path):
-        pygame.mixer.music.load(path)
-        pygame.mixer.music.set_volume(TTS_VOLUME)
-        pygame.mixer.music.play()
-        t0 = time.monotonic()
-        stopped_early = False
-        while pygame.mixer.music.get_busy():
-            if self.stop_speaking.is_set() or not self.running:
-                pygame.mixer.music.stop()
-                stopped_early = True
-                break
-            time.sleep(0.05)
-        # Diagnostic only (temporary): a barge-in logged as "triggered" today was
-        # observed taking 15-25s to actually silence VORTEX, even after fixing the
-        # one confirmed cause (LLM token stream not polled for stop_speaking). This
-        # pins down whether _play() itself ever sees the flag - if playback always
-        # ends here with stopped_early=False regardless of when stop_speaking was
-        # set elsewhere, the bug is in this loop or the flag's visibility, not in
-        # how long synthesis/generation took upstream.
-        self.log(f'[diag] _play took {time.monotonic()-t0:.2f}s stopped_early={stopped_early}')
-        pygame.mixer.music.unload()
-
-    def _speak_chunks(self, chunks):
-        """Synthesise ahead on a worker thread while playing, so speech starts fast
-        and stops the instant stop_speaking is set. Returns False if interrupted."""
-        audio_q = queue.Queue(maxsize=2)
-
-        def producer():
-            loop = asyncio.new_event_loop()
-            try:
-                for chunk in chunks:
-                    if self.stop_speaking.is_set() or not self.running:
-                        break
-                    path = self._synth(loop, chunk)
-                    if path is None:
-                        continue
-                    while True:
-                        if self.stop_speaking.is_set() or not self.running:
-                            self._unlink(path)
-                            return
-                        try:
-                            audio_q.put(path, timeout=0.1)
-                            break
-                        except queue.Full:
-                            continue
-            except Exception as e:
-                self.log(f'TTS producer error: {e}')
-            finally:
-                loop.close()
-                audio_q.put(_STOP)
-
-        self.speaking.set()
-        threading.Thread(target=producer, daemon=True).start()
-        interrupted = False
-        try:
-            # Always drain to _STOP so the producer never blocks on a full queue.
-            while True:
-                item = audio_q.get()
-                if item is _STOP:
-                    break
-                if self.stop_speaking.is_set() or not self.running:
-                    self._unlink(item)
-                    interrupted = True
-                    continue
-                self._play(item)
-                self._unlink(item)
-                if self.stop_speaking.is_set():
-                    interrupted = True
-        finally:
-            self.speaking.clear()
-        # A chunk cancelled mid-synthesis (_synth returning None because
-        # stop_speaking got set while it was still awaiting edge-tts) never
-        # reaches this loop's own interrupted=True checks - it's discarded by
-        # the producer before ever reaching the queue. Checking the flag
-        # directly here catches that path too, so "Speech interrupted" is
-        # logged whenever stop_speaking ended up set, regardless of exactly
-        # which stage the interruption landed in.
-        interrupted = interrupted or self.stop_speaking.is_set()
-        if interrupted:
-            self.log('Speech interrupted')
-        return not interrupted
+    # ---------- speech output (voice/tts.py owns the actual logic) ----------
 
     def speak(self, text):
-        # No log call here - _synth logs each chunk as it's actually synthesized,
-        # which covers both this method and speak_stream() uniformly.
-        return self._speak_chunks(self._chunk_stream(iter([text])))
+        return self.tts.speak(text)
 
     def speak_stream(self, fragments):
-        return self._speak_chunks(self._chunk_stream(fragments))
+        return self.tts.speak_stream(fragments)
 
     def greet(self):
         hour = datetime.datetime.now().hour
         greet = 'Good morning' if hour < 12 else 'Good afternoon' if hour < 18 else 'Good evening'
         self.speak(f'{greet} {USER_NAME}. Vortex AI is online.')
 
-    # ---------- speech input ----------
-
-    def _open_wake_stream(self):
-        return sd.InputStream(channels=1, samplerate=16000, dtype='float32',
-                              blocksize=1280, callback=self._on_audio)
-
-    def _recover_wake_stream(self):
-        """(Re)build the wake InputStream from scratch. Used both after handing
-        the mic back from SpeechRecognition and by the watchdog in _worker()."""
-        if self.stream is not None:
-            with contextlib.suppress(Exception):
-                self.stream.stop()
-                self.stream.close()
-        try:
-            self.wake_model.reset()
-            self.stream = self._open_wake_stream()
-            self.stream.start()
-            self.last_audio_at = time.monotonic()
-        except Exception as e:
-            self.log(f'Wake stream recovery failed: {e}')
-
-    @contextlib.contextmanager
-    def _own_mic(self):
-        """Hand the mic to SpeechRecognition; the wake stream stands down meanwhile.
-
-        Closes and recreates the InputStream on each handoff rather than calling
-        stop()/start() on the same instance. Reusing one stream across many
-        stop/start cycles (one pair per command, so hundreds over a long-running
-        session) proved to eventually stop delivering audio to _on_audio with no
-        exception raised anywhere - the process stays alive and the tray icon
-        still responds, but the wake word silently stops registering. This is
-        exactly what made VORTEX look like it had "stopped listening" after
-        running a while, even though nothing in the code was erroring."""
-        self.capturing.set()
-        if self.stream is not None:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except Exception as e:
-                self.log(f'Wake stream close failed: {e}')
-            self.stream = None
-        try:
-            yield
-        finally:
-            self._recover_wake_stream()
-            self.capturing.clear()
-
-    @staticmethod
-    def _boost_audio_data(audio):
-        """Unlike the wake stream (boosted by _agc), command audio captured via
-        sr.Microphone() went straight to Google's STT completely unboosted - a
-        real asymmetry: the wake word could fire fine (boosted signal) while the
-        actual follow-up command consistently failed to transcribe (raw signal),
-        which is exactly what full-volume "Hey Vortex" working while nothing
-        after it ever got heard looks like. Boost toward the same target RMS
-        used for wake detection before handing audio to recognize_google."""
-        if audio.sample_width != 2:
-            return audio
-        samples = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
-        if len(samples) == 0:
-            return audio
-        rms = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
-        if rms < 40:  # near-total silence - nothing meaningful to boost
-            return audio
-        gain = min(6.0, AGC_TARGET_RMS / rms)
-        if gain <= 1.0:
-            return audio
-        boosted = np.clip(samples.astype(np.float64) * gain, -32768, 32767).astype(np.int16)
-        return sr.AudioData(boosted.tobytes(), audio.sample_rate, audio.sample_width)
-
-    def _record_command(self, timeout, phrase_time_limit, samplerate=16000):
-        """Record one command via sounddevice - the same audio path the wake
-        detector uses - instead of a separate PyAudio-based sr.Microphone().
-
-        Evidence this split path was the real problem, not VAD timing: across
-        many real captures on 2026-08-16, sr.Microphone() raw RMS was mostly
-        40-1000 and rarely transcribed, for the *same* physical mic, user, and
-        moment where the wake stream was reliably scoring strong signal. A
-        standalone probe confirmed this capture path itself is sound (max RMS
-        8081 against a real spoken phrase, played and captured independently
-        of the app).
-
-        Energy-based VAD, calibrated fresh against a brief ambient sample each
-        call. Requires ONSET_FRAMES consecutive frames above threshold before
-        committing to "speech started" (a first cut without this required only
-        one frame, and a single noise blip - a click, a breath - was enough to
-        trigger recording, then time out on silence before real speech even
-        began, producing a short, near-silent clip exactly like the ones that
-        kept failing). A short pre-roll buffer is prepended so the committed
-        onset doesn't clip the first syllable."""
-        frame_len = max(1, samplerate // 33)  # ~30ms frames
-        onset_frames_needed = 4  # ~120ms of sustained energy before committing
-        silence_frames_needed = max(1, int(0.8 * samplerate / frame_len))
-        calib_frames_needed = max(1, int(0.3 * samplerate / frame_len))
-        preroll_len = onset_frames_needed + 2
-        with sd.InputStream(channels=1, samplerate=samplerate, dtype='int16', blocksize=frame_len) as stream:
-            calib = []
-            while len(calib) < calib_frames_needed:
-                data, _ = stream.read(frame_len)
-                calib.append(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
-            # Capped at both ends: a floor of 60 so near-zero ambient doesn't make
-            # the threshold pick up a breath, and a ceiling of 800 so calibration
-            # landing on a loud moment (e.g. echo/reverb right after "Yes Boss?"
-            # finishes) can't push the bar above what real speech reaches - live
-            # evidence this happened: one real capture calibrated to 1947 purely
-            # from ambient noise, well above where normal speech (and every
-            # successful capture logged so far) actually sits.
-            energy_threshold = min(max((float(np.median(calib)) if calib else 0.0) * 2.5, 60.0), 800.0)
-            # Diagnostic only (temporary): logs the calibrated threshold and the
-            # loudest frame actually seen before giving up, so a real timeout
-            # (nothing ever got loud) can be told apart from a miscalibrated
-            # threshold (something did get loud, just never 4 frames running).
-            max_rms_seen = 0.0
-            self.log(f'[diag] capture calib energy_threshold={energy_threshold:.0f}')
-
-            preroll = collections.deque(maxlen=preroll_len)
-            frames = []
-            speaking = False
-            onset_run = 0
-            silence_run = 0
-            start = time.monotonic()
-            while True:
-                data, _ = stream.read(frame_len)
-                rms = np.sqrt(np.mean(data.astype(np.float64) ** 2))
-                loud = rms > energy_threshold
-                if not speaking:
-                    max_rms_seen = max(max_rms_seen, rms)
-                    preroll.append(data.copy())
-                    onset_run = onset_run + 1 if loud else 0
-                    if onset_run >= onset_frames_needed:
-                        speaking = True
-                        silence_run = 0
-                        frames.extend(preroll)
-                        preroll.clear()
-                    elif time.monotonic() - start > timeout:
-                        self.log(f'[diag] capture timeout: energy_threshold={energy_threshold:.0f} max_rms_seen={max_rms_seen:.0f}')
-                        return None
-                else:
-                    frames.append(data.copy())
-                    silence_run = 0 if loud else silence_run + 1
-                    if silence_run >= silence_frames_needed:
-                        break
-                    if (len(frames) * frame_len / samplerate) > phrase_time_limit:
-                        break
-        if not frames:
-            return None
-        return np.concatenate(frames, axis=0).flatten().astype(np.int16).tobytes()
+    # ---------- speech input (voice/stt.py owns the actual logic) ----------
 
     def capture_command(self, timeout=8):
-        try:
-            with self._own_mic():
-                raw_bytes = self._record_command(timeout=timeout, phrase_time_limit=8)
-            if raw_bytes is None:
-                raise sr.WaitTimeoutError('listening timed out while waiting for phrase to start')
-            audio = sr.AudioData(raw_bytes, 16000, 2)
-            # Diagnostic only (temporary - remove once real-world reliability is
-            # confirmed on this new capture path): logs what was actually
-            # captured even when recognize_google() can't transcribe it, so a
-            # near-silent/garbled buffer can be told apart from a buffer with
-            # real signal that Google just couldn't parse.
-            raw = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
-            raw_rms = np.sqrt(np.mean(raw.astype(np.float64) ** 2)) if len(raw) else 0.0
-            duration = len(raw) / audio.sample_rate if audio.sample_rate else 0.0
-            audio = self._boost_audio_data(audio)
-            self.log(f'[diag] captured duration={duration:.2f}s raw_rms={raw_rms:.0f}')
-            cmd = self.recognizer.recognize_google(audio).lower().strip()
-            self.log(f'Heard: {cmd}')
-            return cmd
-        except Exception as e:
-            # type(e).__name__ matters: sr.UnknownValueError's str() is empty, which
-            # is exactly why every past "Capture error:" line here showed nothing.
-            self.log(f'Capture error: {type(e).__name__}: {e}')
-            return None
+        return self.stt.capture_command(timeout=timeout)
 
     # ---------- reasoning ----------
 
@@ -508,7 +226,17 @@ class Vortex:
         blocked waiting on Ollama's next token the whole time, deaf to
         stop_speaking. Mirrors the same producer-thread-plus-polled-queue
         pattern _speak_chunks already uses for TTS, so stop_speaking is now
-        checked at least every 0.1s regardless of how slow Ollama is."""
+        checked at least every 0.1s regardless of how slow Ollama is.
+
+        Stays in main.py rather than moving to voice/tts.py (judgment call,
+        docs/REFACTOR_PLAN.md Step 3): it polls Ollama's LLM stream, not TTS
+        audio - its domain is LLM streaming (Step 4's llm/ package), not
+        voice synthesis, even though it shares the barge-in cancellation
+        pattern with voice/tts.py's _synth/_speak_chunks. Moving it into
+        voice/tts.py would misfile LLM logic into the TTS module and leave
+        Step 4 to untangle it later; leaving it here keeps it available to
+        move again, as one piece, when the LLM provider is actually
+        extracted."""
         token_q = queue.Queue(maxsize=8)
 
         def pump():
@@ -794,62 +522,13 @@ class Vortex:
             return
         self.speak_stream(self.ask_llm_stream(cmd))
 
-    # ---------- wake / dispatch ----------
+    # ---------- wake / dispatch (voice/wake.py, voice/session.py own the actual logic) ----------
 
-    def _on_audio(self, indata, frames, time_info, status):
-        """Audio thread. Stays cheap: detect, flag, hand off. Never speaks or blocks."""
-        if not self.running:
-            raise sd.CallbackStop()
-        self.last_audio_at = time.monotonic()
-        if self.capturing.is_set():
-            return
-        audio = self._agc((indata[:, 0] * 32767).astype(np.int16))
-        score = max(self.wake_model.predict(audio).values())
-        speaking = self.speaking.is_set()
-        # Ongoing diagnostic, not temporary: false wake activations in standby are
-        # still an open issue (see IMPLEMENTED.md Phase 6) - this is what makes any
-        # future occurrence tunable from real data instead of guesswork. Barge-in
-        # itself was confirmed fixed via a live acoustic test on 2026-08-16 (see
-        # CHANGELOG.md), which is what this same logging line helped verify.
-        if score > 0.3:
-            self.log(f'[diag] score={score:.3f} threshold={WAKE_THRESHOLD if not speaking else BARGE_IN_THRESHOLD} noise_floor={self.noise_floor:.0f}')
-        if score < (BARGE_IN_THRESHOLD if speaking else WAKE_THRESHOLD):
-            return
-        now = time.monotonic()
-        if now - self.last_wake < WAKE_COOLDOWN:
-            return
-        self.last_wake = now
-        self.wake_model.reset()
-        self.log(f'{"Barge-in" if speaking else "Wake"} triggered: score={score:.3f} noise_floor={self.noise_floor:.0f}')
-        if speaking:
-            # Cut the audio here, on the spot; the worker picks up the new command.
-            self.stop_speaking.set()
-        self.events.put('barge_in' if speaking else 'wake')
+    def _worker(self):
+        return self.session.worker()
 
     def _active_session(self):
-        """Keep listening for follow-ups (confirmations, next command) without
-        requiring the wake word again, until SESSION_TIMEOUT of silence.
-
-        Checks stop_speaking before each new capture_command() call - without
-        this, a barge-in that interrupts execute() mid-response (stop_speaking
-        set, 'barge_in' queued in self.events) was invisible here: this loop
-        would immediately start a brand-new, full-length capture_command()
-        window instead of returning control to _worker()'s outer loop, which
-        is the only place that actually speaks "Yes Boss?" and clears
-        stop_speaking for the next turn. Live evidence: a barge-in that
-        genuinely cut the current response instantly still took 15-25+
-        seconds to yield the floor, because this loop kept right on listening
-        for an unrelated new command, deaf to the pending interrupt, until
-        that unrelated capture finally timed out on its own."""
-        while self.running:
-            if self.stop_speaking.is_set():
-                return
-            cmd = self.capture_command(timeout=SESSION_TIMEOUT)
-            if cmd is None:
-                self.log('Session timed out, returning to standby')
-                self.awaiting_confirmation = None
-                return
-            self.execute(cmd)
+        return self.session.active_session()
 
     def _warm_up_models(self):
         """Ollama unloads a model from memory after ~5 min idle; the next request
@@ -868,43 +547,6 @@ class Vortex:
                 ollama.embeddings(model=_cfg.embed_model, prompt='warm up', keep_alive='30m')
             except Exception as e:
                 self.log(f'Model warm-up failed (embeddings): {e}')
-
-    def _worker(self):
-        """Owns every slow operation: speaking, listening, executing."""
-        time.sleep(1.5)
-        self.stop_speaking.clear()
-        threading.Thread(target=self._warm_up_models, daemon=True).start()
-        self.greet()
-        while self.running:
-            try:
-                event = self.events.get(timeout=0.5)
-            except queue.Empty:
-                if (not self.capturing.is_set()
-                        and time.monotonic() - self.last_audio_at > WAKE_WATCHDOG_TIMEOUT):
-                    self.log(f'Wake stream watchdog: no audio for over {WAKE_WATCHDOG_TIMEOUT}s, rebuilding stream')
-                    self._recover_wake_stream()
-                continue
-            while not self.events.empty():
-                with contextlib.suppress(queue.Empty):
-                    self.events.get_nowait()
-            if not self.running:
-                break
-            self.stop_speaking.clear()
-            if event == 'barge_in':
-                # Speech is already cut. Drop any pending prompt and take the new order.
-                self.log('Barge-in: yielding the floor')
-                self.awaiting_confirmation = None
-                # Distinct from the fresh-wake greeting on purpose - "Yes Boss?"
-                # alone, right after VORTEX's own sentence was just cut off
-                # mid-word, reads ambiguously (did it hear the interruption, or
-                # is this a coincidence?). "Yes Boss, I'm listening" is
-                # unambiguous: it specifically confirms the cutoff registered.
-                self.speak("Yes Boss, I'm listening.")
-            else:
-                # Always spoken on a fresh wake too: silence alone gave no
-                # audible confirmation VORTEX was actually listening.
-                self.speak('Yes Boss?')
-            self._active_session()
 
     def request_stop_speaking(self, icon=None, item=None):
         self.stop_speaking.set()
@@ -938,10 +580,7 @@ class Vortex:
         self.stop_speaking.set()
         with contextlib.suppress(Exception):
             pygame.mixer.music.stop()
-        if self.stream is not None:
-            with contextlib.suppress(Exception):
-                self.stream.stop()
-                self.stream.close()
+        self.wake.close()
         with contextlib.suppress(Exception):
             self.browser.close()
         with contextlib.suppress(Exception):
@@ -951,9 +590,8 @@ class Vortex:
                 self.rag.close()
 
     def start(self):
-        self.stream = self._open_wake_stream()
-        self.stream.start()
-        threading.Thread(target=self._worker, daemon=True).start()
+        self.wake.start()
+        threading.Thread(target=self.session.worker, daemon=True).start()
         self.icon = pystray.Icon('VORTEX', self.tray_icon(), 'VORTEX Assistant', menu=pystray.Menu(
             pystray.MenuItem('Stop talking', self.request_stop_speaking),
             pystray.MenuItem('Listen now', self.listen_now),
