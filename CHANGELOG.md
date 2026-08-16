@@ -8,6 +8,39 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Fixed (fourth pass - the actual dominant cause)
+- **Found the real, dominant reason barge-in could log as "triggered" and
+  then take 15-25+ seconds to silence VORTEX: `_active_session()`'s loop
+  never checked `stop_speaking` between turns.** The third-pass fixes above
+  (LLM stream, TTS synthesis) were real bugs and did make the *current*
+  response stop quickly - but `_active_session()` would then immediately
+  start a brand-new, full-length `capture_command()` window for "the next
+  follow-up," completely unaware a `'barge_in'` event was sitting in
+  `self.events` waiting to be handled. That event - and the "Yes Boss?"
+  acknowledgment - only got processed once that unrelated new listen window
+  finally timed out on its own, which is exactly the 15-25s delay observed
+  all session. Fixed with one check at the top of the loop: if
+  `stop_speaking` is set (meaning the response we just spoke was cut off by
+  a barge-in, not silence), return immediately instead of listening for a
+  new command, so `_worker()`'s outer loop can process the pending event
+  right away. Verified live: "Barge-in triggered" to "Barge-in: yielding
+  the floor" dropped from 15-25+ seconds to **42 milliseconds**.
+- Rewrote `capture_command()`'s audio acquisition to use the same
+  `sounddevice` path the wake detector uses, instead of a separate PyAudio-
+  based `sr.Microphone()`. Real captures via the old path were mostly RMS
+  40-1000 (rarely transcribing) for the same mic/user/moment the wake stream
+  reliably scored strong signal on - a standalone probe confirmed the new
+  path itself captures cleanly (max RMS 8081 against a real spoken phrase).
+  Uses simple energy-based VAD with a debounced onset (4 consecutive frames
+  above threshold, not 1 - a first cut without this triggered on single
+  noise blips and gave up before real speech even started) and a short
+  pre-roll buffer so the committed clip doesn't clip the first syllable.
+- `_speak_chunks()`'s `interrupted` bookkeeping missed the case where a
+  chunk was cancelled mid-synthesis (discarded by the producer before ever
+  reaching the playback queue) - `stop_speaking.is_set()` is now checked
+  once more directly before returning, so "Speech interrupted" logs
+  correctly regardless of which stage the interruption landed in.
+
 ### Fixed (third pass, after a reboot)
 - **Barge-in could be logged as "triggered" and then take 15-25+ seconds to
   actually silence VORTEX** - two real, distinct interrupt-propagation gaps,
