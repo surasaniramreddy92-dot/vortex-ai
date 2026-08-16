@@ -418,7 +418,20 @@ class Vortex:
             while len(calib) < calib_frames_needed:
                 data, _ = stream.read(frame_len)
                 calib.append(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
-            energy_threshold = max((float(np.median(calib)) if calib else 0.0) * 2.5, 60.0)
+            # Capped at both ends: a floor of 60 so near-zero ambient doesn't make
+            # the threshold pick up a breath, and a ceiling of 800 so calibration
+            # landing on a loud moment (e.g. echo/reverb right after "Yes Boss?"
+            # finishes) can't push the bar above what real speech reaches - live
+            # evidence this happened: one real capture calibrated to 1947 purely
+            # from ambient noise, well above where normal speech (and every
+            # successful capture logged so far) actually sits.
+            energy_threshold = min(max((float(np.median(calib)) if calib else 0.0) * 2.5, 60.0), 800.0)
+            # Diagnostic only (temporary): logs the calibrated threshold and the
+            # loudest frame actually seen before giving up, so a real timeout
+            # (nothing ever got loud) can be told apart from a miscalibrated
+            # threshold (something did get loud, just never 4 frames running).
+            max_rms_seen = 0.0
+            self.log(f'[diag] capture calib energy_threshold={energy_threshold:.0f}')
 
             preroll = collections.deque(maxlen=preroll_len)
             frames = []
@@ -431,6 +444,7 @@ class Vortex:
                 rms = np.sqrt(np.mean(data.astype(np.float64) ** 2))
                 loud = rms > energy_threshold
                 if not speaking:
+                    max_rms_seen = max(max_rms_seen, rms)
                     preroll.append(data.copy())
                     onset_run = onset_run + 1 if loud else 0
                     if onset_run >= onset_frames_needed:
@@ -439,6 +453,7 @@ class Vortex:
                         frames.extend(preroll)
                         preroll.clear()
                     elif time.monotonic() - start > timeout:
+                        self.log(f'[diag] capture timeout: energy_threshold={energy_threshold:.0f} max_rms_seen={max_rms_seen:.0f}')
                         return None
                 else:
                     frames.append(data.copy())

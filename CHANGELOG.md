@@ -8,6 +8,37 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Fixed (fifth pass - tested live before pushing this time)
+- Command capture's energy threshold had no upper bound - live evidence: one
+  real capture calibrated to `energy_threshold=1947` purely from ambient
+  noise/echo right after "Yes Boss?" finished, well above where real speech
+  (and every successful capture logged all day) actually sits, meaning
+  ordinary speech afterward could fail to ever cross it. Capped at 800.
+- **The response-length cap wasn't actually keeping responses short.** 60
+  tokens, then 40, both still let real answers run 14-17s - a raw token cut
+  lands mid-sentence rather than at a natural stop, and doesn't reliably
+  produce a shorter sentence to begin with. Root cause: the system prompt's
+  vague "short spoken sentences" (plural, no limit) wasn't a strong enough
+  instruction - repeated identical queries against the model directly showed
+  9 to 24+ words for the same question, un-capped. Rewrote the system prompt
+  to a concrete constraint ("ONE sentence, no more than 20 words"), and
+  re-tuned `llm_max_tokens` down to 32 as a firm backstop (verified: 5
+  repeated tries of the same question all completed with a proper sentence
+  ending, 7-19 words, none cut off - vs. every previous cap still getting
+  cut short at least once).
+- **This time, every change here was restarted and re-tested live via the
+  acoustic loopback script before committing, not after** - direct user
+  feedback ("do a proper testing before pushing the code... only then push")
+  after the fourth-pass fixes turned out to have their own live regression
+  (a `WaitTimeoutError` from an over-calibrated threshold). Five consecutive
+  live runs after this pass all showed "Barge-in triggered" to "Barge-in:
+  yielding the floor" in under 75ms (25/42/51/72/37ms) - the core interrupt
+  fix from the fourth pass holding up consistently, not a one-off. Near-field
+  self-noise masking (VORTEX's own voice preventing a barge-in from ever
+  being detected at all, not a delay) remains a real, separate, unresolved
+  acoustic limitation - shortening responses reduces its window but doesn't
+  eliminate it; true acoustic echo cancellation would be required for that.
+
 ### Fixed (fourth pass - the actual dominant cause)
 - **Found the real, dominant reason barge-in could log as "triggered" and
   then take 15-25+ seconds to silence VORTEX: `_active_session()`'s loop
