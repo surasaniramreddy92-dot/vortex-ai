@@ -45,6 +45,15 @@ documents = [
     "pymupdf==1.28.0",
     "python-docx==1.2.0",
     "openpyxl==3.1.5",
+    # OCR fallback for scanned/image-only PDF pages (added 2026-08-16, see
+    # documents.py's _ocr_available). pytesseract is only the Python wrapper -
+    # it still needs the actual Tesseract OCR binary installed separately
+    # (not pip-installable; e.g. https://github.com/UB-Mannheim/tesseract/wiki
+    # on Windows) and on PATH, or OCR is skipped with a logged warning rather
+    # than failing. Pillow is already pulled in by the `windows` extra, but
+    # `documents` doesn't depend on `windows`, so it's listed here too.
+    "pytesseract==0.3.13",
+    "Pillow==12.2.0",
 ]
 # Phase 3: browser automation. After installing, also run:
 #   python -m playwright install chromium

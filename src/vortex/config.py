@@ -34,6 +34,17 @@ def _int_env(name, default):
     return int(os.getenv(name, str(default)))
 
 
+def _bool_env(name, default):
+    # Explicit string set, not a truthy cast of the raw string - os.getenv
+    # always returns a non-empty string when the var is set at all, so
+    # bool("false") would evaluate True and silently invert the intent of
+    # e.g. VORTEX_OCR_ENABLED=false.
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() not in ('0', 'false', 'no', 'off')
+
+
 def _default_root():
     # Path.home()-based fallback, not the hardcoded E:\VORTEX main.py uses today
     # - see docs/CURRENT_STATE.md Section 4 for why the hardcoded path is a real
@@ -129,6 +140,36 @@ class VortexConfig:
         'VORTEX_POSTGRES_DSN', 'dbname=vortex user=vortex password=vortex_local_dev host=localhost'))
     qdrant_url: str = field(default_factory=lambda: os.getenv('VORTEX_QDRANT_URL', 'http://localhost:6333'))
     embed_model: str = field(default_factory=lambda: os.getenv('VORTEX_EMBED_MODEL', 'nomic-embed-text'))
+
+    # Phase 7 (Document Intelligence) OCR fallback, added 2026-08-16. Scanned/
+    # image-only PDF pages return empty (or near-empty) text from PyMuPDF's
+    # native extraction, since there's no text layer to read - OCR (pytesseract
+    # + the Tesseract binary) is the fallback for those pages specifically, not
+    # a replacement for native extraction (native text is faster and more
+    # accurate whenever it's actually present). Default on, but genuinely a
+    # no-op wherever the Tesseract binary isn't installed - see documents.py's
+    # _ocr_available(), which checks for it explicitly and logs rather than
+    # assuming, and degrades to "whatever native text WAS extracted" instead
+    # of failing. On this dev machine as of this writing, Tesseract itself is
+    # NOT installed (`where tesseract` finds nothing) - only the pytesseract
+    # Python wrapper is; this flag exists to be able to turn the *attempt*
+    # off entirely (e.g. on a machine where probing for the binary once per
+    # process is itself unwanted) rather than to promise OCR is functional
+    # here today.
+    ocr_enabled: bool = field(default_factory=lambda: _bool_env('VORTEX_OCR_ENABLED', True))
+    # Tesseract language code (its own flag, not a locale string) - 'eng' is
+    # the default language pack Tesseract installs, so this is the one choice
+    # that doesn't additionally require the user to `tesseract --list-langs`
+    # and install a language pack first.
+    ocr_language: str = field(default_factory=lambda: os.getenv('VORTEX_OCR_LANGUAGE', 'eng'))
+    # Whether retrieved-chunk provenance (page number, or section/sheet name
+    # where a document has no page concept) gets surfaced in the prompt
+    # assembled for document Q&A - see rag.py's build_rag_prompt(). Default on
+    # since it costs nothing when a chunk has no page/section (falls through
+    # to the unlabeled excerpt, same as before this existed) and is one of the
+    # two explicit Phase 7 gaps this change closes (see IMPLEMENTED.md).
+    document_page_numbers: bool = field(
+        default_factory=lambda: _bool_env('VORTEX_DOCUMENT_PAGE_NUMBERS', True))
 
     # These four depend on `root`, so they can't use a simple default_factory
     # with no arguments - resolved in __post_init__ once root is known.

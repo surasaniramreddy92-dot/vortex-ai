@@ -76,7 +76,28 @@ from Step 1) still green.
 
 ---
 
-## Step 3 — Extract the voice subsystem
+## Step 3 — Extract the voice subsystem (done, 2026-08-16)
+
+Landed as planned, with two judgment calls documented in-file rather than
+here: `_poll_stream` (LLM token-stream polling) stayed in `main.py` since
+it's LLM-domain logic, not TTS, even though it shares the same cancellation
+pattern as `voice/tts.py` - it'll move again as one piece when Step 4
+extracts the LLM provider. The wake `InputStream`'s lifecycle (open/close/
+recover) stayed in `voice/wake.py` rather than `voice/audio.py`, since
+`wake_model.reset()` must happen at exactly the moment the stream rebuilds -
+splitting them risked a coordination bug for no benefit. No
+`SpeechToText`/`TextToSpeech` interface abstraction was added (the plan's
+"New seam introduced" note) - right after a long, hard-won live-debugging
+session fixing real cancellation bugs, adding an abstraction layer on top
+was judged to add a place a fix could get lost in translation for no
+near-term benefit; each class *is* the concrete implementation, ready to be
+wrapped later. Verified: 14 new/ported tests (`tests/unit/test_barge_in.py`,
+mocked, no hardware) plus a full live acoustic test after merging into
+`main.py` - wake, capture, response, barge-in, and the distinct barge-in
+acknowledgment all still worked, with the same sub-100ms interrupt timing
+measured before the extraction.
+
+## Step 3 (original plan, preserved below for reference) — Extract the voice subsystem
 
 **Goal:** pull everything audio-related out of the `Vortex` god-object into
 `src/vortex/voice/`, behind small interfaces, without changing the

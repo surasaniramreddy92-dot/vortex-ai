@@ -8,6 +8,57 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-16
 
+### Added (seventh pass — refactor + document intelligence, done in parallel)
+Two independent tracks of deferred work, done via two isolated-worktree
+agents running in parallel (touching disjoint files, so no merge conflicts),
+each reviewed line-by-line and independently re-tested against its own
+worktree before merging - and the fully merged result re-tested live one
+more time before this commit, per the same "verify before pushing" rule as
+every pass above.
+
+- **`docs/REFACTOR_PLAN.md` Step 3 — voice subsystem extraction.** Pulled
+  wake detection, TTS, STT, and session/event handling out of the `Vortex`
+  god-object in `main.py` into `src/vortex/voice/` (`wake.py`, `tts.py`,
+  `stt.py`, `audio.py`, `barge_in.py`, `session.py`), each a small class
+  taking its dependencies as constructor arguments. Mechanical extraction
+  only - every fix from earlier today (the cancellable-asyncio-task
+  synthesis, the polled LLM-stream consumption, the `stop_speaking` check at
+  the top of the session loop, the sounddevice capture path with its
+  60-800-capped threshold, the distinct barge-in acknowledgment) is preserved
+  verbatim, not "cleaned up" while moving. `_poll_stream` deliberately stayed
+  in `main.py` (LLM-domain, not TTS - see REFACTOR_PLAN.md's Step 3 note);
+  no `SpeechToText`/`TextToSpeech` interface abstraction was added, since one
+  concrete implementation exists today and an abstraction layer added right
+  after a hard-won debugging session risked losing a fix in translation for
+  no near-term benefit. Verified: 14 tests (`tools/test_barge_in.py`'s
+  scenarios newly ported into `tests/unit/test_barge_in.py`, mocked, no
+  hardware) plus a full live acoustic test after merging - wake (score
+  0.861), capture (`Heard: what is java`), and barge-in all fired correctly,
+  with "Barge-in triggered" to "Speaking: Yes Boss, I'm listening." in 57ms -
+  matching every timing measurement from before the extraction.
+- **Phase 7 (Document Intelligence): OCR fallback + page/section
+  provenance.** A PDF page whose native PyMuPDF text is under ~20 characters
+  (the signal it's a scanned image with no text layer) is now rasterized and
+  run through `pytesseract`/Tesseract, if the Tesseract binary is actually
+  present - it is NOT installed on this dev machine, so this is verified only
+  as far as "detects candidate pages and degrades gracefully" (logs once,
+  keeps native text, never crashes), not as "recovers real text from a scan."
+  Separately, `documents.extract_pages()` (new) returns page-tagged text for
+  PDFs, heading-grouped sections for DOCX, per-sheet sections for XLSX;
+  `rag.py` now chunks per page/section instead of one flattened string and
+  stores `page`/`section` with every chunk (Postgres via an additive
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so existing chunks are
+  unaffected; Qdrant payload). `build_rag_prompt()` labels retrieved excerpts
+  (`[Page 3]`) and asks the model to cite them. Verified end-to-end live
+  (Postgres + Ollama already running, Qdrant started temporarily for the
+  test and stopped after): ingested a synthetic 3-page PDF, asked a targeted
+  question, got back correctly-tagged chunks and a real model answer citing
+  the actual source page. Both features are off-switchable via
+  `VORTEX_OCR_ENABLED`/`VORTEX_DOCUMENT_PAGE_NUMBERS`. `ensure_ingested()`'s
+  signature is unchanged and `retrieve()`'s new dict-shaped return is handled
+  defensively by `build_rag_prompt()` (dicts or plain strings both work), so
+  `main.py`'s one call site needed zero edits.
+
 ### Changed (sixth pass)
 - **Barge-in now speaks a distinct acknowledgment** - "Yes Boss, I'm
   listening." instead of the same generic "Yes Boss?" used for a fresh wake.
