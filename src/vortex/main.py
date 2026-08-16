@@ -894,11 +894,16 @@ class Vortex:
                 # Speech is already cut. Drop any pending prompt and take the new order.
                 self.log('Barge-in: yielding the floor')
                 self.awaiting_confirmation = None
-            # Always spoken, for both a fresh wake and a barge-in: cutting off
-            # mid-sentence with total silence gave no audible confirmation that
-            # the interruption actually registered - hearing "Yes Boss?" right
-            # after the cutoff is the confirmation.
-            self.speak('Yes Boss?')
+                # Distinct from the fresh-wake greeting on purpose - "Yes Boss?"
+                # alone, right after VORTEX's own sentence was just cut off
+                # mid-word, reads ambiguously (did it hear the interruption, or
+                # is this a coincidence?). "Yes Boss, I'm listening" is
+                # unambiguous: it specifically confirms the cutoff registered.
+                self.speak("Yes Boss, I'm listening.")
+            else:
+                # Always spoken on a fresh wake too: silence alone gave no
+                # audible confirmation VORTEX was actually listening.
+                self.speak('Yes Boss?')
             self._active_session()
 
     def request_stop_speaking(self, icon=None, item=None):
