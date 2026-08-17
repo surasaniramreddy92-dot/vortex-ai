@@ -6,7 +6,46 @@ this file is the fast way to see what changed and when without reading full
 commit diffs. Phase-by-phase status (not date-based) lives in
 `IMPLEMENTED.md`; this file is chronological.
 
-## 2026-08-17
+## 2026-08-17 (continued into 2026-08-18)
+
+### Fixed (severe regression - direct user report: "it sometimes speaks without me calling for it")
+- **VORTEX could hold entire fabricated "conversations" with itself, with no
+  user input anywhere in them.** Root cause, confirmed directly from live
+  logs: earlier the same day, `capture_command()` was changed to try the
+  offline STT model as a "second opinion" whenever cloud STT returned
+  `UnknownValueError` (see the "capture reliability" fix above) - correct
+  and verified for the case it was built for (a real command Google
+  mis-heard right after a fresh "Hey Vortex"). The gap: `_active_session()`
+  keeps listening for follow-ups for up to `session_timeout` (18s) *without*
+  requiring the wake word again, and that same offline "second opinion" was
+  also being tried on every one of those follow-up captures - meaning any
+  ambient sound during passive listening (room noise, a TV, adjacent
+  conversation) that Google couldn't parse now also got fabricated into a
+  plausible-sounding "command" by the offline model (a well-documented
+  Whisper-family behavior). Executing *any* transcription, even a
+  hallucinated one, resets the follow-up window - so this cascaded: one
+  fabricated command produced a spoken response, which reset the listening
+  window, which captured more ambient noise, which fabricated another
+  "command," repeating until 18s of genuine silence finally occurred.
+  Observed live, verbatim from the log: a long, uninterrupted run of
+  entirely unprompted responses - "Did you know that there is a type of
+  jellyfish that is immortal?", "It was a pleasure assisting you.", "I
+  can't engage in conversations that promote or glorify violence against
+  women." - none of them replies to anything the user actually said.
+  **Fix:** `capture_command()` gained `allow_offline_on_unclear` (default
+  `True`); `voice/session.py`'s `active_session()` now passes `True` only
+  for the *first* capture in a session (right after the wake/barge-in
+  acknowledgment - a deliberate, intentional signal from the user) and
+  `False` for every continuation capture after that. A real network failure
+  (`sr.RequestError`) is unaffected and still always tries offline,
+  regardless of session state - only the `UnknownValueError` "unclear
+  audio" path is gated. Verified: a direct test constructs a real `Session`
+  object (not mocked) and asserts the flag sequence across a multi-command
+  session is `[True, False, False, ...]`; live-tested that the first-capture
+  offline fallback still works correctly (unaffected, "list files on
+  desktop" still recovered via offline STT right after a fresh wake).
+  167/167 tests pass, including 4 new ones covering both the gating logic
+  and that `RequestError` stays ungated.
 
 ### Added (two direct user feature requests)
 - **"Read my screen."** New `src/vortex/screen.py`: screenshots the current
