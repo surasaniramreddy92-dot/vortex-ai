@@ -78,23 +78,32 @@ class VortexConfig:
     # and "genuine speech" - real attempts appear spread across roughly
     # 0.5-0.95, not clustered tightly above some obvious cutoff, meaning this
     # wake model's confidence for this user's actual voice runs lower overall
-    # than it did for the synthetic training clips. Lowered further to 0.65 as
-    # a pragmatic, evidence-based (not arbitrary) compromise - it is not a
-    # clean fix, and the real fix is very likely retraining/revalidating the
-    # wake model against real voice samples from this user rather than only
-    # synthetic TTS (tools/wakeword/build_hey_vortex.py), not just tuning this
-    # number further. Trade-off, not a free lunch: standby false-positives
-    # were already a known open issue before either change (see
-    # IMPLEMENTED.md) and each reduction makes that more likely - accepted
-    # because a wake word that doesn't wake is a worse failure mode.
-    wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.65))
+    # than it did for the synthetic training clips. Lowered further to 0.65 on
+    # 2026-08-16 as a pragmatic, evidence-based compromise. Lowered again to
+    # 0.60 on 2026-08-17 after direct evidence the 0.65 bar was still too
+    # tight even under good conditions: running the exact same wake model +
+    # AGC pipeline in isolation (bypassing the live process entirely) against
+    # a real captured "Hey Vortex" utterance scored a max of 0.6499 - a
+    # genuine attempt landing a hair's-width under 0.65, not background noise.
+    # The live process scored the same kind of attempt even lower still
+    # (likely real resource contention - Ollama/Qdrant/memory/tray all
+    # running concurrently - degrading an already-marginal score further).
+    # Not a clean fix, and the real fix is very likely retraining/
+    # revalidating the wake model against real voice samples from this user
+    # rather than only synthetic TTS (tools/wakeword/build_hey_vortex.py),
+    # not just tuning this number further. Trade-off, not a free lunch:
+    # standby false-positives were already a known open issue before any of
+    # these changes (see IMPLEMENTED.md) and each reduction makes that more
+    # likely - accepted because a wake word that doesn't wake is a worse
+    # failure mode than an occasional unwanted activation.
+    wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.60))
     # Kept equal to wake_threshold, not independently set - main.py's own comment
     # on BARGE_IN_THRESHOLD documents this as deliberate ("NOT stricter than
     # WAKE_THRESHOLD, on purpose"): an earlier attempt at a *higher* bar for
     # barge-in broke real interruptions, since barge-in is inherently harder to
     # score high on (the mic also hears our own speakers). Lowering wake_threshold
     # without lowering this too would have silently reintroduced that same bug.
-    barge_in_threshold: float = field(default_factory=lambda: _float_env('VORTEX_BARGE_IN_THRESHOLD', 0.65))
+    barge_in_threshold: float = field(default_factory=lambda: _float_env('VORTEX_BARGE_IN_THRESHOLD', 0.60))
     wake_cooldown: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_COOLDOWN', 1.5))
     wake_watchdog_timeout: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_WATCHDOG_TIMEOUT', 5.0))
 

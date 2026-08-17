@@ -817,14 +817,22 @@ class Vortex:
         greeting's critical path, means that cost is usually already paid by the
         time you actually speak.
 
-        Also warms up the offline STT/TTS fallback models (faster-whisper /
-        piper-tts), if enabled - downloading/loading them here, while the
-        network is presumably still up, means they're actually ready by the
-        time a real outage makes them needed, instead of the first load
-        attempt happening during that outage (when a fresh download would
-        fail too)."""
-        self.stt.ensure_offline_ready()
-        self.tts.ensure_offline_ready()
+        Deliberately does NOT eagerly warm the offline STT/TTS fallback models
+        (faster-whisper/piper-tts) anymore - live testing on 2026-08-17 found
+        the wake model, run in isolation on a real captured utterance, scored
+        meaningfully higher (0.65) than the same audio scored inside the live
+        process (near zero) - real evidence of resource contention, and the
+        offline models' background thread pools (ctranslate2, onnxruntime,
+        alongside openWakeWord's own onnxruntime session, all competing for
+        the same 4 physical cores) are a plausible contributor given they're
+        now permanently resident once loaded. Wake/barge-in responsiveness is
+        this project's constant, everyday priority; offline fallback exists
+        for a network outage that hasn't actually happened once in extensive
+        testing. Both engines still lazy-load correctly on first real use
+        (stt.py/tts.py's _get_offline_model/_get_offline_voice, unchanged) -
+        this only removes the *eager* load, trading a few extra seconds on
+        the first fallback during a genuine future outage for a lighter,
+        more responsive process the rest of the time."""
         try:
             ollama.chat(model=MODEL, messages=[{'role': 'user', 'content': 'hi'}], keep_alive='30m')
         except Exception as e:

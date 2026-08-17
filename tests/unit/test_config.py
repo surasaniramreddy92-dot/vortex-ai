@@ -26,8 +26,8 @@ def test_defaults_match_main_py():
     assert cfg.voice == 'en-US-AvaMultilingualNeural'
     assert cfg.user_name == 'Boss'
     assert cfg.tts_volume == 1.0
-    assert cfg.wake_threshold == 0.65
-    assert cfg.barge_in_threshold == 0.65
+    assert cfg.wake_threshold == 0.60
+    assert cfg.barge_in_threshold == 0.60
     assert cfg.wake_cooldown == 1.5
     assert cfg.wake_watchdog_timeout == 5.0
     assert cfg.agc_target_rms == 3500
@@ -89,8 +89,8 @@ def test_two_instances_are_independent_snapshots(monkeypatch):
     """Confirms the default_factory fix actually works: changing an env var
     between constructions must be picked up, not frozen at import time."""
     cfg1 = VortexConfig.from_env()
-    assert cfg1.wake_threshold == 0.65
+    assert cfg1.wake_threshold == 0.60
     monkeypatch.setenv('VORTEX_WAKE_THRESHOLD', '0.95')
     cfg2 = VortexConfig.from_env()
     assert cfg2.wake_threshold == 0.95
-    assert cfg1.wake_threshold == 0.65  # cfg1 is a frozen snapshot, unaffected
+    assert cfg1.wake_threshold == 0.60  # cfg1 is a frozen snapshot, unaffected
