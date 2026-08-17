@@ -71,20 +71,41 @@ def test_request_error_falls_back_to_offline():
     stt._recognize_offline.assert_called_once()
 
 
-def test_unknown_value_error_does_not_fall_back_to_offline():
-    """sr.UnknownValueError means Google WAS reached and understood the attempt
-    fine - the audio itself was unclear. Falling back to a smaller, less
-    accurate local model in that case would be a downgrade, not a fallback,
-    so this must NOT call the offline path, exactly like before this fallback
-    existed."""
+def test_unknown_value_error_now_falls_back_to_offline():
+    """Reversed 2026-08-17 from the original design (sr.UnknownValueError
+    used to NOT fall back, on the theory that a smaller local model would be
+    a downgrade for audio Google already found unclear). Real evidence
+    overturned that: a live-captured, genuinely-failed clip that Google
+    couldn't transcribe was fed to faster-whisper directly and transcribed
+    correctly (language probability 1.0) - cloud STT is measurably less
+    reliable than the "fallback" for this project's AGC-boosted audio, so
+    UnknownValueError now also triggers the offline attempt, same as a
+    network failure."""
     stt = make_stt()
     stt.recognizer.recognize_google.side_effect = sr.UnknownValueError()
-    stt._recognize_offline = Mock(return_value='should never be reached')
+    stt._recognize_offline = Mock(return_value='turn off the lights')
+
+    result = stt.capture_command()
+
+    assert result == 'turn off the lights'
+    stt._recognize_offline.assert_called_once()
+
+
+def test_unknown_value_error_with_no_offline_result_saves_debug_capture():
+    """When BOTH cloud and offline fail to produce a transcription, the audio
+    that was actually sent to Google is saved for later inspection (see
+    _save_debug_capture) - this is genuinely useful evidence at that point,
+    unlike the old design where every UnknownValueError was already a dead
+    end with nothing more to learn from it."""
+    stt = make_stt()
+    stt.recognizer.recognize_google.side_effect = sr.UnknownValueError()
+    stt._recognize_offline = Mock(return_value=None)
+    stt._save_debug_capture = Mock()
 
     result = stt.capture_command()
 
     assert result is None
-    stt._recognize_offline.assert_not_called()
+    stt._save_debug_capture.assert_called_once()
 
 
 def test_offline_fallback_returning_nothing_is_reported_as_no_capture():

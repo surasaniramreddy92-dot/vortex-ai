@@ -8,6 +8,46 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-17
 
+### Fixed (capture reliability - root-caused with real evidence, not a guess)
+- **Offline STT (faster-whisper) now also engages on `sr.UnknownValueError`,
+  not just `sr.RequestError`.** Originally (2026-08-16) the offline fallback
+  only triggered on a real network failure, on the theory that falling back
+  to a smaller local model when Google *had* been reached but found the
+  audio unclear would be a downgrade, not a fallback. Real evidence
+  overturned that tonight: added a temporary diagnostic that saves the exact
+  audio sent to Google whenever it returns `UnknownValueError`
+  (`logs/debug_captures/`, `SpeechToText._save_debug_capture`). A live
+  failed capture from real use was inspected directly - a clean, real-
+  speech RMS envelope (627-8900 across the clip, not noise or silence),
+  confirmed clipping-free - fed to Google directly (reproduced the exact
+  same `UnknownValueError`) and to `faster-whisper` directly (transcribed
+  it correctly: "So, I love you so much, I love you so much.", language
+  probability 1.0). Google's cloud STT is, at least for this project's
+  AGC-boosted audio profile, demonstrably *less* reliable than the
+  "fallback" - so `UnknownValueError` now also tries offline, same as a
+  network failure. `_save_debug_capture` is now called only when *both*
+  cloud and offline fail to produce anything, since that's the genuinely
+  unexplained case worth capturing for next time.
+- **Offline STT is eagerly warmed at startup again; offline TTS stays
+  lazy.** These stopped being symmetric the moment STT's trigger widened
+  from "rare network outage" to "common unclear-audio miss" - leaving STT
+  lazy would mean the first capture failure in every session pays a
+  3.8-8s cold-load penalty on top of already having failed once, which is
+  worse for responsiveness, not better. TTS's fallback trigger is
+  unchanged (network failure only, still rare), so it stays lazy.
+- **`WAKE_THRESHOLD`/`BARGE_IN_THRESHOLD` lowered from 0.65 to 0.60** and
+  **offline models briefly made fully lazy then partially re-warmed**, both
+  investigated with direct evidence tonight - see the "post-wave-2 live
+  testing" section below for the full trail (isolated wake-model scoring at
+  0.6499 on a real utterance, 478MB vs 249MB memory measurements). The
+  wake-registration gap in synthetic testing mentioned there was NOT fully
+  explained by threshold or memory alone; it turned out to be entangled
+  with the capture-reliability problem fixed above in the same testing
+  session - real human voice attempts scored and captured correctly
+  throughout, confirmed live multiple times after these fixes landed
+  (wake scores 0.640-0.809; a real "list files on desktop" command
+  correctly captured, routed, and answered end-to-end).
+
 ### Fixed (post-wave-2 live testing)
 - **`WAKE_THRESHOLD`/`BARGE_IN_THRESHOLD` lowered from 0.65 to 0.60.** Direct
   evidence, not a guess: ran the exact wake model + AGC pipeline in
