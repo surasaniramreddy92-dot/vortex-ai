@@ -10,12 +10,15 @@ exactly, not "cleaned up" while moving.
 """
 import asyncio
 import os
+import pathlib
 import queue
 import re
 import tempfile
 import threading
 import time
+import wave
 
+import aiohttp
 import edge_tts
 import pygame
 
@@ -25,6 +28,19 @@ MARKUP = re.compile(r'[*_`#]+')
 MIN_CHUNK = 25
 MAX_CHUNK = 320
 _STOP = object()
+# Sentinel distinguishing "never tried to load" from "tried and it's
+# unavailable" (None) - see the matching sentinel in stt.py for why.
+_UNSET = object()
+# aiohttp.ClientConnectionError covers ClientConnectorError (DNS/refused/no
+# route) and ServerTimeoutError - i.e. "couldn't reach the service at all".
+# asyncio.TimeoutError covers this module's own connect/receive timeouts.
+# Deliberately NOT edge_tts's own EdgeTTSException family (WebSocketError,
+# UnexpectedResponse, NoAudioReceived, ...) - those mean the service WAS
+# reached and returned something odd, which is a different, retriable
+# problem, not a network-down problem; falling back to a worse local voice
+# for that would be a downgrade, not a fallback. Same reasoning as stt.py's
+# sr.RequestError-vs-sr.UnknownValueError split.
+_NETWORK_ERRORS = (aiohttp.ClientConnectionError, asyncio.TimeoutError)
 
 
 class TextToSpeech:
@@ -37,14 +53,26 @@ class TextToSpeech:
     could get lost in translation for no near-term benefit. This class *is*
     the concrete implementation; a future SpeechToText/TextToSpeech interface
     can wrap it later without touching this logic.
+
+    Offline TTS fallback (piper-tts), added 2026-08-16 - see config.py's
+    offline_fallback_enabled docstring for the reasoning and IMPLEMENTED.md's
+    Phase 1 row for what's actually verified. Kept inside this one concrete
+    class for the same reason as above, not split behind a second
+    TextToSpeech implementation.
     """
 
-    def __init__(self, *, voice, tts_volume, barge_in, log, is_running):
+    def __init__(self, *, voice, tts_volume, barge_in, log, is_running,
+                 offline_enabled=True, offline_voice='en_US-lessac-medium',
+                 offline_model_dir=None):
         self.voice = voice
         self.tts_volume = tts_volume
         self.barge_in = barge_in
         self.log = log
         self.is_running = is_running
+        self.offline_enabled = offline_enabled
+        self.offline_voice = offline_voice
+        self.offline_model_dir = offline_model_dir
+        self._offline_piper_voice = _UNSET  # lazy singleton - see _get_offline_voice
 
     def _chunk_stream(self, fragments):
         """Turn a stream of text fragments into speakable sentence-sized chunks."""
@@ -100,8 +128,92 @@ class TextToSpeech:
                 loop.run_until_complete(asyncio.wait({task}, timeout=0.1))
             task.result()
             return path
+        except _NETWORK_ERRORS as e:
+            # Couldn't reach edge-tts at all (network/DNS/timeout) - the one
+            # case the offline fallback is for. edge_tts's own EdgeTTSException
+            # family (malformed/empty response, the service WAS reached) is
+            # deliberately NOT caught here and falls through to the generic
+            # except below, unchanged from before this fallback existed.
+            self._unlink(path)
+            self.log(f'Cloud TTS unreachable ({type(e).__name__}: {e}); trying offline fallback')
+            offline_path = self._synth_offline(text)
+            if offline_path:
+                self.log('Synthesized offline (fallback)')
+                return offline_path
+            self.log('Offline TTS fallback unavailable or failed')
+            return None
         except Exception as e:
             self.log(f'TTS synth error: {e}')
+            self._unlink(path)
+            return None
+
+    def _get_offline_voice(self):
+        """Lazy-loaded piper-tts singleton - loaded at most once per process,
+        not once per chunk (load was measured at ~4s warm, see IMPLEMENTED.md
+        - paying that per chunk would make streamed speech far choppier than
+        the pipelined producer/consumer design in _speak_chunks intends)."""
+        if not self.offline_enabled:
+            return None
+        if self._offline_piper_voice is _UNSET:
+            try:
+                from piper import PiperVoice
+                model_path = os.path.join(self.offline_model_dir or '.', f'{self.offline_voice}.onnx')
+                if not os.path.exists(model_path):
+                    raise FileNotFoundError(
+                        f'offline TTS voice not cached at {model_path} - call '
+                        'ensure_offline_ready() while online first, or run '
+                        '`python -m piper.download_voices` for this voice')
+                self._offline_piper_voice = PiperVoice.load(model_path)
+                self.log(f'Offline TTS voice ready: {self.offline_voice}')
+            except Exception as e:
+                # Not installed, not downloaded yet and no network to fetch it,
+                # corrupt file, etc - all degrade to "offline unavailable"
+                # rather than raising, same as documents.py's _ocr_available.
+                self.log(f'Offline TTS unavailable: {type(e).__name__}: {e}')
+                self._offline_piper_voice = None
+        return self._offline_piper_voice
+
+    def ensure_offline_ready(self):
+        """Explicit warm-up hook (called from main.py's _warm_up_models, off the
+        critical path, while the network is presumably still up): downloads
+        the piper voice if it isn't cached yet, then loads it. If the first
+        load attempt happened during _synth's fallback instead, that would be
+        exactly the moment the network is down, and a fresh download would
+        fail too."""
+        if not self.offline_enabled:
+            return
+        model_path = os.path.join(self.offline_model_dir or '.', f'{self.offline_voice}.onnx')
+        if not os.path.exists(model_path):
+            try:
+                from piper.download_voices import download_voice
+                os.makedirs(self.offline_model_dir or '.', exist_ok=True)
+                # download_voice does path / "filename" internally - it requires
+                # an actual pathlib.Path, not a plain str (confirmed the hard
+                # way: passing a str raised TypeError: unsupported operand
+                # type(s) for /: 'str' and 'str').
+                download_voice(self.offline_voice, pathlib.Path(self.offline_model_dir or '.'))
+                self.log(f'Offline TTS voice downloaded: {self.offline_voice}')
+            except Exception as e:
+                self.log(f'Offline TTS voice download failed: {type(e).__name__}: {e}')
+                return
+        self._get_offline_voice()
+
+    def _synth_offline(self, text):
+        """Render one chunk via piper-tts (local, no network) to a wav and
+        return its path, or None if it failed. Only ever called from _synth
+        when edge-tts raised a network-reachability error - see _NETWORK_ERRORS."""
+        voice = self._get_offline_voice()
+        if voice is None:
+            return None
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        path = tmp.name
+        tmp.close()
+        try:
+            with wave.open(path, 'wb') as wav_file:
+                voice.synthesize_wav(text, wav_file)
+            return path
+        except Exception as e:
+            self.log(f'Offline TTS synth error: {type(e).__name__}: {e}')
             self._unlink(path)
             return None
 

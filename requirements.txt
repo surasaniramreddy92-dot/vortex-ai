@@ -25,3 +25,9 @@ playwright==1.62.0
 # Phase 5: RAG - requires PostgreSQL and Qdrant running locally (see README).
 psycopg2-binary==2.9.12
 qdrant-client==1.18.0
+# Phase 5: sparse (BM25) half of hybrid dense+sparse retrieval, added
+# 2026-08-16. Tiny, pure-Python, no dependency beyond numpy (already above) -
+# deliberately NOT sentence-transformers, which would pull in torch (~122MB
+# Windows wheel alone) for cross-encoder reranking; see rag.py's module
+# docstring for the full reasoning.
+rank_bm25==0.2.2

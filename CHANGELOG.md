@@ -6,6 +6,106 @@ this file is the fast way to see what changed and when without reading full
 commit diffs. Phase-by-phase status (not date-based) lives in
 `IMPLEMENTED.md`; this file is chronological.
 
+## 2026-08-17
+
+### Added (wave 2 — three more phases, done in parallel and merged carefully)
+Three more independent tracks of previously-deferred work, again via
+isolated-worktree agents running in parallel (each touching a different
+concern), each reviewed line-by-line and independently re-tested against
+its own worktree before merging. Unlike the previous parallel wave, all
+three agents touched `src/vortex/config.py` (and two touched
+`src/vortex/main.py`/`pyproject.toml`) with independent additions - merged
+by hand, field by field, rather than a blind file copy, specifically to
+avoid one agent's work silently overwriting another's. Verified after
+merging: `VortexConfig.from_env()` exposes every new field from all three
+agents together, `pytest tests/unit/` is 146/146, and a full live restart
+with Ollama + Qdrant both actually running (both were down after an
+extended idle gap - restarted manually before testing) confirmed wake,
+barge-in, and general Q&A all still work correctly together.
+
+- **Phase 1 (Voice I/O): offline STT/TTS fallback.** Cloud stays primary
+  (Google Web Speech / edge-tts, unchanged behavior when online); a local
+  model only engages on a *network-reachability* failure specifically -
+  `sr.RequestError` for STT, `aiohttp.ClientConnectionError`/
+  `asyncio.TimeoutError` for TTS - never on "the service was reached but
+  didn't like this audio/text" (`sr.UnknownValueError`, edge-tts's own
+  `EdgeTTSException` family), since falling back to a worse local model for
+  that would be a downgrade, not a fallback. Offline STT: `faster-whisper`
+  `base.en` (CPU, int8) - chosen over `tiny.en` since measured warm latency
+  wasn't meaningfully different (0.9-1.4s vs 0.5-1.5s) but accuracy is
+  better. Offline TTS: `piper-tts` `en_US-lessac-medium`. Both lazy-load as
+  an in-process singleton and are explicitly warmed (downloaded + loaded)
+  from the existing `_warm_up_models()` hook, off the critical path, so a
+  real outage isn't also the first download attempt. New optional extra
+  `voice-offline` (not in `voice`/`all`) - kept separate for two verified
+  reasons: real added install weight (`ctranslate2`+`av`+`piper-tts`
+  wheels, before either engine's model weights are even downloaded) and
+  `piper-tts` being GPL-3.0-or-later, a different license than the rest of
+  this project's dependencies. One kill switch,
+  `VortexConfig.offline_fallback_enabled`. 55 tests (17 new); real,
+  non-mocked verification through the actual classes (a real edge-tts clip
+  transcribed correctly offline; a real sentence synthesized to a playable
+  WAV offline). Honestly not verified: an actual severed-network scenario
+  end-to-end (this sandbox has no clean way to do that) - the trigger
+  condition itself is verified via mocked exceptions, not a real outage.
+- **Phase 2 (Desktop & OS Automation): file operations, search, structured
+  audit log, capability registry.** New `src/vortex/files.py`: voice-
+  triggered list/find/move/copy/rename/delete, scoped ONLY to
+  `documents.SEARCH_DIRS` (Desktop/Documents/Downloads - reusing the
+  existing path policy, not a second one that could drift), every resolved
+  path verified to actually live under one of those directories before
+  being touched (`PathNotAllowedError` otherwise, blocking `..`/absolute
+  paths/symlinks). Delete goes through `send2trash` (Recycle Bin), never a
+  permanent `os.remove`; move/copy/rename structurally refuse to overwrite
+  an existing destination file. Delete/move/rename are gated behind the
+  same `awaiting_confirmation` yes/no flow already used for shutdown/
+  restart/close-all (now a dict, `{'action', 'path', ...}`, not a bare
+  string - every assignment site updated consistently, verified no leftover
+  string-format assumption remained anywhere). New `src/vortex/audit.py`:
+  a separate JSON-lines audit trail (timestamp/action/target/outcome) for
+  consequential actions, additional to (not replacing) the existing
+  plaintext log. `execute()`'s if/elif dispatch chain was mechanically
+  restructured into a list-based capability registry (`_build_registry`) -
+  dispatch infrastructure only, not authorization/policy; every pre-
+  existing command verified to still route to the exact same handler.
+  104 tests (66 new). **Found live, after merging (not by the agent) and
+  fixed:** the `list_files` matcher only accepted "list files in X", not
+  "list files on X" - a natural phrasing a real live test actually used -
+  which silently fell through to the generic LLM fallback instead of
+  failing clearly, and the model hallucinated a plausible-looking but
+  entirely fake file listing (generic `username`-placeholder paths, not
+  real files). Broadened the matcher to accept both "in" and "on"; added a
+  regression test (`test_list_files_matches_on_as_well_as_in`) proving both
+  phrasings now reach the real handler, not the LLM fallback, and list a
+  real file, not a hallucinated one.
+- **Phase 5 (Memory & RAG): hybrid dense+sparse search, reranking.**
+  `retrieve()` now fuses Qdrant's dense cosine search with BM25 keyword
+  search (`rank_bm25`, pure-Python, only depends on numpy already pinned
+  for the wake-word stack) via Reciprocal Rank Fusion - rank-only
+  combination, chosen specifically because cosine similarity and BM25
+  scores live on incomparable scales and a weighted blend would need ad-hoc
+  normalization RRF avoids entirely - then reranks the fused pool with a
+  keyword-overlap/exact-substring heuristic. **Deliberately not a cross-
+  encoder reranker:** `sentence-transformers`' actual footprint was checked
+  before deciding (`pip install --dry-run` resolved a 122MB torch wheel
+  plus transformers/tokenizers/safetensors, with a further separate model
+  download at first real use) - a real mismatch for an otherwise fully
+  local, lightweight desktop app, so a cheap heuristic was used instead.
+  Both stages independently off-switchable (`VORTEX_RAG_HYBRID_SEARCH`,
+  `VORTEX_RAG_RERANK`). Conversation-memory migration onto this stack was
+  considered and deliberately scoped out as too large/risky to do safely
+  in the same pass - `memory.py` is untouched. **Incidental bug found and
+  fixed while testing:** `ensure_ingested()` re-ingesting a changed
+  document deleted the old Postgres chunk rows but never told Qdrant to
+  drop the matching points, so a document's previous version's chunk
+  vectors stayed indexed forever, silently polluting future dense search
+  for that document - now scoped `qdrant.delete()` before re-upserting.
+  `retrieve()`'s signature/return shape unchanged, so `main.py`'s one call
+  site needed zero edits. 62 tests (22 new); live end-to-end verified
+  against real Postgres+Qdrant+Ollama (Qdrant started temporarily via its
+  scheduled task, stopped after) with an adversarial near-duplicate-keyword
+  test document.
+
 ## 2026-08-16
 
 ### Added (seventh pass — refactor + document intelligence, done in parallel)
