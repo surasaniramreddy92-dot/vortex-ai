@@ -23,6 +23,8 @@ from .documents import resolve_document, extract_text, build_document_prompt
 from .browser import BrowserAgent
 from .rag import RagStore, build_rag_prompt
 from .config import VortexConfig
+from . import files as fileops
+from .audit import AuditLog
 from .voice.barge_in import BargeIn
 from .voice.audio import AudioProcessor
 from .voice.wake import WakeDetector
@@ -85,6 +87,16 @@ os.makedirs(LOG_DIR, exist_ok=True)
 DATA_DIR = _cfg.data_dir
 os.makedirs(DATA_DIR, exist_ok=True)
 MEMORY_DB_PATH = _cfg.memory_db_path
+# Structured JSON-lines audit trail (audit.py) for consequential actions -
+# separate from, not a replacement for, the plain logging.info() calls below.
+AUDIT_LOG_PATH = _cfg.audit_log_path
+# Offline STT/TTS fallback (faster-whisper / piper-tts) - see config.py's
+# offline_fallback_enabled docstring for the reasoning.
+OFFLINE_FALLBACK_ENABLED = _cfg.offline_fallback_enabled
+OFFLINE_STT_MODEL = _cfg.offline_stt_model
+OFFLINE_STT_MODEL_DIR = _cfg.offline_stt_model_dir
+OFFLINE_TTS_VOICE = _cfg.offline_tts_voice
+OFFLINE_TTS_MODEL_DIR = _cfg.offline_tts_model_dir
 HISTORY_TURNS = _cfg.history_turns
 SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-backed Q&A doesn't need this cap
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -103,6 +115,7 @@ class Vortex:
         self.recognizer = sr.Recognizer()
         self.current_pid = os.getpid()
         self.awaiting_confirmation = None
+        self.audit = AuditLog(AUDIT_LOG_PATH)
         self.memory = MemoryStore(MEMORY_DB_PATH)
         self.browser = BrowserAgent()
         try:
@@ -130,11 +143,14 @@ class Vortex:
             audio_processor=self.audio, barge_in=self.barge_in, capturing=self.capturing,
             events=self.events, log=self.log, is_running=lambda: self.running)
         self.tts = TextToSpeech(voice=VOICE, tts_volume=TTS_VOLUME, barge_in=self.barge_in,
-                                 log=self.log, is_running=lambda: self.running)
+                                 log=self.log, is_running=lambda: self.running,
+                                 offline_enabled=OFFLINE_FALLBACK_ENABLED, offline_voice=OFFLINE_TTS_VOICE,
+                                 offline_model_dir=OFFLINE_TTS_MODEL_DIR)
         self.stt = SpeechToText(
             recognizer=self.recognizer, capturing=self.capturing, agc_target_rms=AGC_TARGET_RMS,
             stop_wake_stream=self.wake.stop_stream, recover_wake_stream=self.wake.recover_stream,
-            log=self.log)
+            log=self.log, offline_enabled=OFFLINE_FALLBACK_ENABLED, offline_model_size=OFFLINE_STT_MODEL,
+            offline_model_dir=OFFLINE_STT_MODEL_DIR)
         # Callables below are lambdas closing over `self` and calling back
         # through Vortex's own (dynamically-dispatched) methods, not pre-bound
         # references captured once - so instance-level monkeypatching of
@@ -170,6 +186,11 @@ class Vortex:
             'github': 'https://github.com', 'chatgpt': 'https://chatgpt.com',
             'google': 'https://google.com', 'whatsapp': 'https://web.whatsapp.com'
         }
+
+        # Capability registry (see _build_registry docstring below) - built
+        # once per instance so its handler closures capture this instance's
+        # `self`, not looked up freshly by name on every command.
+        self._registry = self._build_registry()
 
     def log(self, msg):
         logging.info(msg)
@@ -385,6 +406,7 @@ class Vortex:
     def close_named_app(self, target):
         exe = self.native_apps.get(target.lower())
         if not exe:
+            self.audit.record('close_app', target, 'failed', reason='unknown_app')
             self.speak(f"I don't know how to close {target} yet.")
             return
         closed = False
@@ -394,6 +416,10 @@ class Vortex:
                     p.terminate()
                     closed = True
             except psutil.Error: pass
+        if closed:
+            self.audit.record('close_app', target, 'executed')
+        else:
+            self.audit.record('close_app', target, 'failed', reason='not_running')
         self.speak(f'Closed {target}.' if closed else f'{target} was not running.')
 
     def close_all_apps(self):
@@ -407,14 +433,17 @@ class Vortex:
                 p.terminate()
                 count += 1
             except psutil.Error: pass
+        self.audit.record('close_all', 'all_non_protected_processes', 'executed', count=count)
         self.speak(f'Closed {count} applications.')
 
     def system_shutdown(self):
         self.speak('Shutting down the system. See you soon Boss.')
+        self.audit.record('shutdown', 'system', 'executed')
         subprocess.Popen('shutdown /s /t 5', shell=True)
 
     def system_restart(self):
         self.speak('Restarting the system now Boss.')
+        self.audit.record('restart', 'system', 'executed')
         subprocess.Popen('shutdown /r /t 5', shell=True)
 
     def lock_system(self):
@@ -423,19 +452,337 @@ class Vortex:
         self.speak('Locking the system now Boss.')
         subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
 
+    # ---------- file operations (files.py owns path resolution/safety) ----------
+    # list/search are read-only, so they run immediately with no confirmation
+    # and no audit entry (audit.py is scoped to consequential actions - see
+    # its module docstring). delete/move/rename can destroy or overwrite an
+    # existing file, so - exactly like shutdown/restart/close-all above - they
+    # go through self.awaiting_confirmation and only actually run from
+    # handle_confirmation once the user says yes. copy is immediate: it can't
+    # destroy anything that existed before (files.py's move_file/copy_file
+    # both refuse to overwrite an existing destination file outright, so
+    # copy's only previously-risky outcome is already a hard error, not a
+    # silent surprise), so gating it behind a spoken confirmation would add
+    # friction without closing a real safety gap.
+
+    def _do_delete_file(self, path):
+        try:
+            fileops.delete_file(path)
+            self.audit.record('delete_file', path, 'executed')
+            self.speak(f'Deleted {os.path.basename(path)}. It went to the Recycle Bin.')
+        except fileops.PathNotAllowedError:
+            self.audit.record('delete_file', path, 'failed', reason='path_not_allowed')
+            self.speak("I can't delete that - it's outside the folders I'm allowed to touch.")
+        except OSError as e:
+            self.audit.record('delete_file', path, 'failed', reason=str(e))
+            self.speak(f"I couldn't delete that file: {e}")
+
+    def _do_move_file(self, path, dest_dir):
+        try:
+            dest = fileops.move_file(path, dest_dir)
+            self.audit.record('move_file', path, 'executed', dest=str(dest))
+            self.speak(f'Moved {os.path.basename(path)}.')
+        except FileExistsError:
+            self.audit.record('move_file', path, 'failed', reason='destination_exists')
+            self.speak("A file with that name already exists there. I won't overwrite it.")
+        except fileops.PathNotAllowedError:
+            self.audit.record('move_file', path, 'failed', reason='path_not_allowed')
+            self.speak("I can't move that - it's outside the folders I'm allowed to touch.")
+        except OSError as e:
+            self.audit.record('move_file', path, 'failed', reason=str(e))
+            self.speak(f"I couldn't move that file: {e}")
+
+    def _do_rename_file(self, path, new_name):
+        try:
+            dest = fileops.rename_file(path, new_name)
+            self.audit.record('rename_file', path, 'executed', new_name=dest.name)
+            self.speak(f'Renamed it to {dest.name}.')
+        except FileExistsError:
+            self.audit.record('rename_file', path, 'failed', reason='destination_exists')
+            self.speak("A file with that name already exists there. I won't overwrite it.")
+        except fileops.PathNotAllowedError:
+            self.audit.record('rename_file', path, 'failed', reason='path_not_allowed')
+            self.speak("I can't rename that - it's outside the folders I'm allowed to touch.")
+        except OSError as e:
+            self.audit.record('rename_file', path, 'failed', reason=str(e))
+            self.speak(f"I couldn't rename that file: {e}")
+
     def handle_confirmation(self, cmd):
         if not self.awaiting_confirmation:
             return False
+        pending = self.awaiting_confirmation
+        action = pending['action']
         if 'yes' in cmd:
-            action = self.awaiting_confirmation
             self.awaiting_confirmation = None
             if action == 'close_all': self.close_all_apps()
             elif action == 'shutdown': self.system_shutdown()
             elif action == 'restart': self.system_restart()
+            elif action == 'delete_file': self._do_delete_file(pending['path'])
+            elif action == 'move_file': self._do_move_file(pending['path'], pending['dest_dir'])
+            elif action == 'rename_file': self._do_rename_file(pending['path'], pending['new_name'])
         else:
             self.awaiting_confirmation = None
+            self.audit.record(action, pending.get('path', action), 'declined')
             self.speak('Action cancelled, Boss.')
         return True
+
+    # ---------- capability registry ----------
+    # Dispatch infrastructure only, NOT authorization/policy: this decides
+    # which handler a command routes to, replacing what used to be one long
+    # if/elif chain in execute() that mixed classification (which pattern
+    # matches) with dispatch (what runs) in the same block. It does not add
+    # or change any permission check - destructive actions are still exactly
+    # as gated (or not) as they were before; `destructive` here is
+    # descriptive metadata for readability/future tooling, not an enforced
+    # gate. Every matcher/handler pair below is a direct, behavior-preserving
+    # translation of the original if/elif chain (verified via
+    # tests/unit/test_registry.py asserting each pattern still reaches the
+    # same handler) - the *order* below is exactly the original order,
+    # since several matchers are intentionally checked before broader ones
+    # (documented inline, same as before this refactor).
+
+    def _build_registry(self):
+        def literal(*substrings):
+            return lambda cmd: any(s in cmd for s in substrings)
+
+        def search(pattern):
+            compiled = re.compile(pattern)
+            return lambda cmd: compiled.search(cmd)
+
+        def match(pattern):
+            compiled = re.compile(pattern)
+            return lambda cmd: compiled.match(cmd)
+
+        youtube_patterns = [
+            re.compile(r'(?:open |go to )?youtube(?: and)? (?:play|search for|find|watch) (.+)'),
+            re.compile(r'play (.+) on youtube'),
+            re.compile(r'search youtube for (.+)'),
+        ]
+
+        def match_youtube(cmd):
+            for p in youtube_patterns:
+                m = p.match(cmd)
+                if m:
+                    return m
+            return None
+
+        def h_shutdown_vortex(cmd, m):
+            self.speak('Shutting down. See you soon Boss.')
+            self.stop()
+
+        def h_time(cmd, m):
+            self.speak(f"The current time is {datetime.datetime.now().strftime('%I:%M %p')}")
+
+        def h_date(cmd, m):
+            self.speak(f"Today's date is {datetime.datetime.now().strftime('%d %B %Y')}")
+
+        def h_close_all_prompt(cmd, m):
+            self.awaiting_confirmation = {'action': 'close_all'}
+            self.audit.record('close_all', 'all_non_protected_processes', 'prompted')
+            self.speak('This may close unsaved work. Should I proceed?')
+
+        def h_restart_prompt(cmd, m):
+            self.awaiting_confirmation = {'action': 'restart'}
+            self.audit.record('restart', 'system', 'prompted')
+            self.speak('Should I restart the system now Boss?')
+
+        def h_shutdown_prompt(cmd, m):
+            self.awaiting_confirmation = {'action': 'shutdown'}
+            self.audit.record('shutdown', 'system', 'prompted')
+            self.speak('Should I shut down the system now Boss?')
+
+        def h_lock(cmd, m):
+            self.lock_system()
+
+        def h_close_browser(cmd, m):
+            self.browser.close()
+            self.speak('Closed the browser.')
+
+        def h_read_page(cmd, m):
+            self.speak(self.browser.read_page())
+
+        def h_youtube(cmd, m):
+            self.speak(self.browser.play_youtube(m.group(1).strip()))
+
+        def h_web_search(cmd, m):
+            self.speak(self.browser.search(m.group(1).strip()))
+
+        def h_browse(cmd, m):
+            self.speak(self.browser.open(m.group(1).strip()))
+
+        def h_click(cmd, m):
+            self.speak(self.browser.click_text(m.group(1).strip()))
+
+        # ---- file operations / search (Phase 2, 2026-08-16) ----
+        # "search for file(s)..."/"find file..." is checked before the
+        # generic web-search entry above's pattern (`search(?: the web)? for
+        # (.+)`), which would otherwise swallow "search for files containing
+        # report" whole and run a web search for "files containing report"
+        # instead of a local filename search - same reasoning the file's
+        # existing YouTube-before-generic-search ordering already documents.
+
+        def h_search_files(cmd, m):
+            query = m.group(1).strip()
+            matches = fileops.search_files(query)
+            if not matches:
+                self.speak(f"I couldn't find any files matching {query}.")
+                return
+            names = ', '.join(p.name for p in matches[:5])
+            plural = 's' if len(matches) != 1 else ''
+            self.speak(f'I found {len(matches)} matching file{plural}: {names}.')
+
+        def h_list_files(cmd, m):
+            dir_name = m.group(1).strip() if m.group(1) else None
+            names, err = fileops.list_files(dir_name)
+            if err:
+                self.speak(err)
+                return
+            if not names:
+                self.speak('No files found.')
+                return
+            shown = ', '.join(names[:10])
+            more = ', and more.' if len(names) > 10 else '.'
+            plural = 's' if len(names) != 1 else ''
+            self.speak(f'Found {len(names)} file{plural}: {shown}{more}')
+
+        def h_delete_file(cmd, m):
+            name = m.group(1).strip()
+            path = fileops.resolve_file(name)
+            if not path:
+                self.speak(f"I couldn't find a file called {name}.")
+                return
+            self.awaiting_confirmation = {'action': 'delete_file', 'path': str(path)}
+            self.audit.record('delete_file', str(path), 'prompted')
+            self.speak(f'This will move {path.name} to the Recycle Bin. Should I proceed?')
+
+        def h_move_file(cmd, m):
+            name, dest_name = m.group(1).strip(), m.group(2).strip()
+            path = fileops.resolve_file(name)
+            if not path:
+                self.speak(f"I couldn't find a file called {name}.")
+                return
+            dest_dir = fileops.resolve_dir(dest_name)
+            if not dest_dir:
+                self.speak(f"I can only move files between Desktop, Documents, and Downloads - not {dest_name}.")
+                return
+            self.awaiting_confirmation = {'action': 'move_file', 'path': str(path), 'dest_dir': str(dest_dir)}
+            self.audit.record('move_file', str(path), 'prompted', dest=str(dest_dir))
+            self.speak(f'This will move {path.name} to {dest_name}. Should I proceed?')
+
+        def h_copy_file(cmd, m):
+            name, dest_name = m.group(1).strip(), m.group(2).strip()
+            path = fileops.resolve_file(name)
+            if not path:
+                self.speak(f"I couldn't find a file called {name}.")
+                return
+            dest_dir = fileops.resolve_dir(dest_name)
+            if not dest_dir:
+                self.speak(f"I can only copy files between Desktop, Documents, and Downloads - not {dest_name}.")
+                return
+            try:
+                dest = fileops.copy_file(path, dest_dir)
+                self.audit.record('copy_file', str(path), 'executed', dest=str(dest))
+                self.speak(f'Copied {path.name} to {dest_name}.')
+            except FileExistsError:
+                self.audit.record('copy_file', str(path), 'failed', reason='destination_exists')
+                self.speak(f"A file named {path.name} already exists in {dest_name}. I won't overwrite it.")
+            except fileops.PathNotAllowedError:
+                self.audit.record('copy_file', str(path), 'failed', reason='path_not_allowed')
+                self.speak("I can't copy that - it's outside the folders I'm allowed to touch.")
+            except OSError as e:
+                self.audit.record('copy_file', str(path), 'failed', reason=str(e))
+                self.speak(f"I couldn't copy that file: {e}")
+
+        def h_rename_file(cmd, m):
+            name, new_name = m.group(1).strip(), m.group(2).strip()
+            path = fileops.resolve_file(name)
+            if not path:
+                self.speak(f"I couldn't find a file called {name}.")
+                return
+            self.awaiting_confirmation = {'action': 'rename_file', 'path': str(path), 'new_name': new_name}
+            self.audit.record('rename_file', str(path), 'prompted', new_name=new_name)
+            self.speak(f'This will rename {path.name} to {new_name}. Should I proceed?')
+
+        def h_close_app(cmd, m):
+            self.close_named_app(m.group(1).strip())
+
+        def h_open(cmd, m):
+            self.open_target(m.group(1).strip())
+
+        def h_document_question(cmd, m):
+            self.answer_document_question(m.group(1).strip(), m.group(2).strip())
+
+        def h_summarize(cmd, m):
+            self.summarize_document(m.group(1).strip())
+
+        def h_read_document(cmd, m):
+            self.summarize_document(m.group(1).strip())
+
+        # Order matters: this is a straight-line translation of the original
+        # if/elif chain in execute(), same order, same "checked before the
+        # broader pattern below" comments preserved from the original.
+        return [
+            {'name': 'shutdown_vortex', 'matcher': literal('shutdown vortex'), 'handler': h_shutdown_vortex,
+             'destructive': True, 'description': 'Stop the VORTEX process itself.'},
+            {'name': 'time', 'matcher': search(r'\btime\b'), 'handler': h_time,
+             'destructive': False, 'description': 'Speak the current time.'},
+            {'name': 'date', 'matcher': search(r'\bdate\b'), 'handler': h_date,
+             'destructive': False, 'description': 'Speak today\'s date.'},
+            {'name': 'close_all_prompt', 'matcher': literal('close all'), 'handler': h_close_all_prompt,
+             'destructive': True, 'description': 'Prompt to close every non-protected running app.'},
+            {'name': 'restart_prompt', 'matcher': literal('restart system', 'reboot system'),
+             'handler': h_restart_prompt, 'destructive': True, 'description': 'Prompt to restart the system.'},
+            {'name': 'shutdown_prompt', 'matcher': literal('shutdown system'), 'handler': h_shutdown_prompt,
+             'destructive': True, 'description': 'Prompt to shut down the system.'},
+            {'name': 'lock', 'matcher': search(r'\block\b.*\b(?:system|computer|screen|pc)\b'), 'handler': h_lock,
+             'destructive': False, 'description': 'Lock the workstation (no confirmation - trivially reversible).'},
+            # Browser commands are checked before the generic close/open/read
+            # patterns below so "close browser" / "read the page" don't get misrouted.
+            {'name': 'close_browser', 'matcher': literal('close browser', 'quit browser'),
+             'handler': h_close_browser, 'destructive': False, 'description': 'Close the automated browser session.'},
+            {'name': 'read_page', 'matcher': search(r"(?:read|what'?s on) (?:the |this )?page"),
+             'handler': h_read_page, 'destructive': False, 'description': 'Read back the current browser page.'},
+            # YouTube search-and-play is checked before the generic "open (.+)"
+            # pattern below, which used to swallow phrases like "open youtube and
+            # play X" whole and fall through to a dumb literal-phrase web search
+            # (see IMPLEMENTED.md).
+            {'name': 'youtube', 'matcher': match_youtube, 'handler': h_youtube,
+             'destructive': False, 'description': 'Search and play a YouTube video.'},
+            # File search is checked before the generic web-search pattern below -
+            # see the comment above h_search_files.
+            {'name': 'search_files', 'matcher': match(r'(?:find|search for) files?(?: named| called| containing)? (.+)'),
+             'handler': h_search_files, 'destructive': False,
+             'description': 'Find files by name in Desktop/Documents/Downloads.'},
+            {'name': 'web_search', 'matcher': match(r'(?:search(?: the web)? for|google) (.+)'),
+             'handler': h_web_search, 'destructive': False, 'description': 'Search the web.'},
+            {'name': 'browse', 'matcher': match(r'(?:go to|browse to|browse) (.+)'), 'handler': h_browse,
+             'destructive': False, 'description': 'Navigate the browser to a URL or site name.'},
+            {'name': 'click', 'matcher': match(r'click (?:on )?(.+)'), 'handler': h_click,
+             'destructive': False, 'description': 'Click matching text on the current page.'},
+            {'name': 'list_files', 'matcher': match(r'list files?(?: (?:in|on) (.+))?$'), 'handler': h_list_files,
+             'destructive': False, 'description': 'List files in Desktop/Documents/Downloads.'},
+            {'name': 'delete_file_prompt', 'matcher': match(r'delete file (.+)'), 'handler': h_delete_file,
+             'destructive': True, 'description': 'Prompt to delete a file (Recycle Bin, not permanent).'},
+            {'name': 'move_file_prompt', 'matcher': match(r'move file (.+) to (.+)'), 'handler': h_move_file,
+             'destructive': True, 'description': 'Prompt to move a file between the allowed directories.'},
+            {'name': 'copy_file', 'matcher': match(r'copy file (.+) to (.+)'), 'handler': h_copy_file,
+             'destructive': False, 'description': 'Copy a file between the allowed directories (no overwrite).'},
+            {'name': 'rename_file_prompt', 'matcher': match(r'rename file (.+) to (.+)'), 'handler': h_rename_file,
+             'destructive': True, 'description': 'Prompt to rename a file in place.'},
+            {'name': 'close_app', 'matcher': match(r'close (.+)'), 'handler': h_close_app,
+             'destructive': True, 'description': 'Close one named running app.'},
+            {'name': 'open', 'matcher': match(r'open (.+)'), 'handler': h_open,
+             'destructive': False, 'description': 'Open a named app, web app, or web search.'},
+            # Document commands, checked after the app-launching "open (.+)"
+            # pattern so "open chrome" still launches an app rather than
+            # looking for a file.
+            {'name': 'document_question', 'matcher': match(r'what does (.+?) say about (.+)'),
+             'handler': h_document_question, 'destructive': False, 'description': 'Answer a question about a document.'},
+            {'name': 'summarize', 'matcher': match(r'(?:summarize|summarise) (.+)'), 'handler': h_summarize,
+             'destructive': False, 'description': 'Summarize a document.'},
+            {'name': 'read_document', 'matcher': match(r'read (?:me )?(.+)'), 'handler': h_read_document,
+             'destructive': False, 'description': 'Read (summarize) a document.'},
+        ]
 
     def execute(self, cmd):
         if not cmd:
@@ -443,83 +790,14 @@ class Vortex:
             return
         if self.handle_confirmation(cmd):
             return
-        if 'shutdown vortex' in cmd:
-            self.speak('Shutting down. See you soon Boss.')
-            self.stop()
-            return
-        if re.search(r'\btime\b', cmd):
-            self.speak(f"The current time is {datetime.datetime.now().strftime('%I:%M %p')}")
-            return
-        if re.search(r'\bdate\b', cmd):
-            self.speak(f"Today's date is {datetime.datetime.now().strftime('%d %B %Y')}")
-            return
-        if 'close all' in cmd:
-            self.awaiting_confirmation = 'close_all'
-            self.speak('This may close unsaved work. Should I proceed?')
-            return
-        if 'restart system' in cmd or 'reboot system' in cmd:
-            self.awaiting_confirmation = 'restart'
-            self.speak('Should I restart the system now Boss?')
-            return
-        if 'shutdown system' in cmd:
-            self.awaiting_confirmation = 'shutdown'
-            self.speak('Should I shut down the system now Boss?')
-            return
-        if re.search(r'\block\b.*\b(?:system|computer|screen|pc)\b', cmd):
-            self.lock_system()
-            return
-        # Browser commands are checked before the generic close/open/read patterns
-        # below so "close browser" / "read the page" don't get misrouted.
-        if 'close browser' in cmd or 'quit browser' in cmd:
-            self.browser.close()
-            self.speak('Closed the browser.')
-            return
-        if re.search(r"(?:read|what'?s on) (?:the |this )?page", cmd):
-            self.speak(self.browser.read_page())
-            return
-        # YouTube search-and-play is checked before the generic "open (.+)" pattern
-        # below, which used to swallow phrases like "open youtube and play X" whole
-        # and fall through to a dumb literal-phrase web search (see IMPLEMENTED.md).
-        m = (re.match(r'(?:open |go to )?youtube(?: and)? (?:play|search for|find|watch) (.+)', cmd)
-             or re.match(r'play (.+) on youtube', cmd)
-             or re.match(r'search youtube for (.+)', cmd))
-        if m:
-            self.speak(self.browser.play_youtube(m.group(1).strip()))
-            return
-        m = re.match(r'(?:search(?: the web)? for|google) (.+)', cmd)
-        if m:
-            self.speak(self.browser.search(m.group(1).strip()))
-            return
-        m = re.match(r'(?:go to|browse to|browse) (.+)', cmd)
-        if m:
-            self.speak(self.browser.open(m.group(1).strip()))
-            return
-        m = re.match(r'click (?:on )?(.+)', cmd)
-        if m:
-            self.speak(self.browser.click_text(m.group(1).strip()))
-            return
-        m = re.match(r'close (.+)', cmd)
-        if m:
-            self.close_named_app(m.group(1).strip())
-            return
-        m = re.match(r'open (.+)', cmd)
-        if m:
-            self.open_target(m.group(1).strip())
-            return
-        # Document commands, checked after the app-launching "open (.+)" pattern
-        # so "open chrome" still launches an app rather than looking for a file.
-        m = re.match(r'what does (.+?) say about (.+)', cmd)
-        if m:
-            self.answer_document_question(m.group(1).strip(), m.group(2).strip())
-            return
-        m = re.match(r'(?:summarize|summarise) (.+)', cmd)
-        if m:
-            self.summarize_document(m.group(1).strip())
-            return
-        m = re.match(r'read (?:me )?(.+)', cmd)
-        if m:
-            self.summarize_document(m.group(1).strip())
-            return
+        for entry in self._registry:
+            m = entry['matcher'](cmd)
+            if m:
+                entry['handler'](cmd, m)
+                return
+        # No registered capability matched - fall through to the LLM. Not a
+        # registry entry itself: this is the default reasoning path, not a
+        # registered capability with its own trigger phrase.
         self.speak_stream(self.ask_llm_stream(cmd))
 
     # ---------- wake / dispatch (voice/wake.py, voice/session.py own the actual logic) ----------
@@ -537,7 +815,16 @@ class Vortex:
         look like it isn't responding on the first real command after a restart
         or a pause. Firing a trivial request per model right at startup, off the
         greeting's critical path, means that cost is usually already paid by the
-        time you actually speak."""
+        time you actually speak.
+
+        Also warms up the offline STT/TTS fallback models (faster-whisper /
+        piper-tts), if enabled - downloading/loading them here, while the
+        network is presumably still up, means they're actually ready by the
+        time a real outage makes them needed, instead of the first load
+        attempt happening during that outage (when a fresh download would
+        fail too)."""
+        self.stt.ensure_offline_ready()
+        self.tts.ensure_offline_ready()
         try:
             ollama.chat(model=MODEL, messages=[{'role': 'user', 'content': 'hi'}], keep_alive='30m')
         except Exception as e:

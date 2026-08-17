@@ -16,6 +16,12 @@ import numpy as np
 import sounddevice as sd
 import speech_recognition as sr
 
+# Sentinel distinguishing "never tried to load" from "tried and it's
+# unavailable" (None) - a plain None default would re-attempt the (possibly
+# slow, possibly failing) load on every single capture_command call once it
+# had already failed once.
+_UNSET = object()
+
 
 class SpeechToText:
     """Judgment call: no separate SpeechToText interface/adapter split
@@ -28,16 +34,31 @@ class SpeechToText:
     direct import of wake.py, so this module doesn't need to know anything
     about WakeDetector's internals - just "stand the wake stream down" and
     "bring it back up".
+
+    Offline STT fallback (faster-whisper), added 2026-08-16 - see
+    config.py's offline_fallback_enabled docstring for the reasoning and
+    IMPLEMENTED.md's Phase 1 row for what's actually verified. Kept as a
+    fallback *inside* this one concrete class rather than a second
+    SpeechToText implementation behind an interface, for the same reason the
+    class-level docstring above gives for not splitting an interface out yet:
+    one concrete capture path today, this fix is specific to it.
     """
 
     def __init__(self, *, recognizer, capturing, agc_target_rms,
-                 stop_wake_stream, recover_wake_stream, log):
+                 stop_wake_stream, recover_wake_stream, log,
+                 offline_enabled=True, offline_model_size='base.en',
+                 offline_model_dir=None, offline_compute_type='int8'):
         self.recognizer = recognizer
         self.capturing = capturing
         self.agc_target_rms = agc_target_rms
         self.stop_wake_stream = stop_wake_stream
         self.recover_wake_stream = recover_wake_stream
         self.log = log
+        self.offline_enabled = offline_enabled
+        self.offline_model_size = offline_model_size
+        self.offline_model_dir = offline_model_dir
+        self.offline_compute_type = offline_compute_type
+        self._offline_model = _UNSET  # lazy singleton - see _get_offline_model
 
     @contextlib.contextmanager
     def _own_mic(self):
@@ -150,6 +171,60 @@ class SpeechToText:
             return None
         return np.concatenate(frames, axis=0).flatten().astype(np.int16).tobytes()
 
+    def _get_offline_model(self):
+        """Lazy-loaded faster-whisper singleton - loaded at most once per process,
+        not once per capture_command() call (model load was measured at 1-4s
+        warm / 30-40s on first-ever download, see IMPLEMENTED.md - paying that
+        on every fallback would make the fallback itself unusably slow)."""
+        if not self.offline_enabled:
+            return None
+        if self._offline_model is _UNSET:
+            try:
+                from faster_whisper import WhisperModel
+                self._offline_model = WhisperModel(
+                    self.offline_model_size, device='cpu',
+                    compute_type=self.offline_compute_type,
+                    download_root=self.offline_model_dir)
+                self.log(f'Offline STT model ready: {self.offline_model_size}')
+            except Exception as e:
+                # Not installed, no cached model and no network to fetch one,
+                # corrupt cache, etc - all degrade to "offline unavailable"
+                # rather than raising, same as documents.py's _ocr_available.
+                self.log(f'Offline STT unavailable: {type(e).__name__}: {e}')
+                self._offline_model = None
+        return self._offline_model
+
+    def ensure_offline_ready(self):
+        """Explicit warm-up hook (called from main.py's _warm_up_models, off the
+        critical path, while the network is presumably still up) so the model
+        is downloaded and cached *before* it's ever actually needed - if the
+        first attempt to load it happened during capture_command's fallback,
+        that would be exactly the moment the network is down, and a fresh
+        download would fail too."""
+        self._get_offline_model()
+
+    def _recognize_offline(self, audio):
+        """Fallback transcription via faster-whisper - local, no network. Only
+        ever called from capture_command when recognize_google raised
+        sr.RequestError (Google unreachable), never sr.UnknownValueError
+        (Google was reached fine, the audio just wasn't clear enough to it -
+        falling back to a smaller, less accurate local model in that case
+        would be a downgrade, not a fallback)."""
+        model = self._get_offline_model()
+        if model is None:
+            return None
+        # faster-whisper accepts a float32 mono waveform directly (no need to
+        # round-trip through a file, or through av's ffmpeg-based decoder,
+        # since this is already raw 16kHz PCM straight from _record_command).
+        samples = np.frombuffer(audio.get_raw_data(), dtype=np.int16).astype(np.float32) / 32768.0
+        try:
+            segments, _info = model.transcribe(samples, language='en')
+            text = ' '.join(seg.text for seg in segments).strip().lower()
+            return text or None
+        except Exception as e:
+            self.log(f'Offline STT transcription error: {type(e).__name__}: {e}')
+            return None
+
     def capture_command(self, timeout=8):
         try:
             with self._own_mic():
@@ -167,9 +242,23 @@ class SpeechToText:
             duration = len(raw) / audio.sample_rate if audio.sample_rate else 0.0
             audio = self._boost_audio_data(audio)
             self.log(f'[diag] captured duration={duration:.2f}s raw_rms={raw_rms:.0f}')
-            cmd = self.recognizer.recognize_google(audio).lower().strip()
-            self.log(f'Heard: {cmd}')
-            return cmd
+            try:
+                cmd = self.recognizer.recognize_google(audio).lower().strip()
+                self.log(f'Heard: {cmd}')
+                return cmd
+            except sr.RequestError as e:
+                # Couldn't reach Google at all (network/DNS/timeout) - the one
+                # case the offline fallback is for. sr.UnknownValueError (Google
+                # reached fine, couldn't parse the audio) deliberately is NOT
+                # caught here and falls through to the outer except below,
+                # unchanged from before this fallback existed.
+                self.log(f'Cloud STT unreachable ({type(e).__name__}: {e}); trying offline fallback')
+                cmd = self._recognize_offline(audio)
+                if cmd:
+                    self.log(f'Heard (offline): {cmd}')
+                    return cmd
+                self.log('Offline STT fallback unavailable or produced nothing')
+                return None
         except Exception as e:
             # type(e).__name__ matters: sr.UnknownValueError's str() is empty, which
             # is exactly why every past "Capture error:" line here showed nothing.

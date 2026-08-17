@@ -171,12 +171,84 @@ class VortexConfig:
     document_page_numbers: bool = field(
         default_factory=lambda: _bool_env('VORTEX_DOCUMENT_PAGE_NUMBERS', True))
 
-    # These four depend on `root`, so they can't use a simple default_factory
-    # with no arguments - resolved in __post_init__ once root is known.
+    # Hybrid dense+sparse retrieval and reranking, added 2026-08-16 (see
+    # rag.py's module docstring for the full mechanism and reasoning).
+    # Default on: hybrid search fixes a real, demonstrated gap (dense-only
+    # retrieval can miss a chunk purely because it contains an exact keyword
+    # - a product code, a number, a proper noun - the embedding model didn't
+    # weight heavily; see IMPLEMENTED.md for the concrete before/after
+    # ranking comparison). Off-switchable because it costs one extra
+    # Postgres query per uncached document (for the BM25 corpus) and more
+    # CPU per question than dense-only search - a real, if small, latency
+    # trade-off on top of the existing embedding + Ollama round trip.
+    rag_hybrid_search: bool = field(
+        default_factory=lambda: _bool_env('VORTEX_RAG_HYBRID_SEARCH', True))
+    # Keyword-overlap reranking of the fused hybrid candidate pool - NOT a
+    # cross-encoder (sentence-transformers pulls in torch, a ~122MB+ Windows
+    # wheel plus a separately-downloaded model at first use; see rag.py for
+    # the measured footprint). Default on: it's a cheap, local, explainable
+    # pass over an already-small candidate pool (RERANK_POOL=10 chunks), not
+    # a second network/model round trip. Off-switchable for the same reason
+    # as rag_hybrid_search above - it's additional CPU work per question.
+    rag_rerank: bool = field(
+        default_factory=lambda: _bool_env('VORTEX_RAG_RERANK', True))
+
+    # Phase 1 offline STT/TTS fallback, added 2026-08-16. Cloud STT (Google Web
+    # Speech) and cloud TTS (edge-tts) both silence VORTEX outright on a network
+    # outage even though wake detection is fully local - see IMPLEMENTED.md's
+    # Phase 1 row. This is a *fallback*, not a replacement: cloud is tried
+    # first every time (better quality, matches existing behavior exactly when
+    # online) and the offline engine only engages when the cloud call fails
+    # for a network-reachability reason specifically - see stt.py's
+    # capture_command (sr.RequestError, not sr.UnknownValueError) and tts.py's
+    # _synth (aiohttp.ClientConnectionError/asyncio.TimeoutError, not edge-tts's
+    # own EdgeTTSException family). One kill switch covers both directions,
+    # matching the ocr_enabled pattern just above: default on, but a genuine
+    # no-op wherever faster-whisper/piper-tts aren't installed or their model
+    # files aren't cached yet - both stt.py and tts.py probe for this
+    # explicitly and log rather than assuming, same as documents.py's
+    # _ocr_available().
+    offline_fallback_enabled: bool = field(
+        default_factory=lambda: _bool_env('VORTEX_OFFLINE_FALLBACK_ENABLED', True))
+    # faster-whisper model size. Measured on this dev machine (CPU-only, no
+    # dedicated GPU - see IMPLEMENTED.md): warm inference on a short spoken
+    # command was tiny.en ~0.5-1.5s vs base.en ~0.9-1.4s, i.e. the two were not
+    # meaningfully different in latency once the model is loaded and cached
+    # (75MB vs 141MB on disk). Given that, base.en's real, well-documented
+    # accuracy advantage over tiny.en is worth taking - this is a fallback
+    # path where correctness matters more than shaving another ~0.3s off an
+    # already-sub-2s transcription. Revisit with tiny.en if this ever needs to
+    # run on meaningfully weaker CPU hardware than this dev machine.
+    offline_stt_model: str = field(
+        default_factory=lambda: os.getenv('VORTEX_OFFLINE_STT_MODEL', 'base.en'))
+    # Piper TTS voice. piper-tts (the OHF-voice/piper1-gpl package on PyPI, GPL-
+    # 3.0-or-later - noted here since that's a different license than the rest
+    # of this project's dependencies) ships prebuilt Windows wheels with no
+    # separate build toolchain required, confirmed by installing it directly
+    # in this dev environment - the plan's original Piper mention turned out to
+    # be realistically installable on Windows via pip after all, no substitute
+    # engine was needed. en_US-lessac-medium synthesized a 13-word sentence in
+    # ~2.2s (one-time voice load ~4s, cached after) and produced a real,
+    # playable ~4.6s WAV file - see IMPLEMENTED.md for the full test.
+    offline_tts_voice: str = field(
+        default_factory=lambda: os.getenv('VORTEX_OFFLINE_TTS_VOICE', 'en_US-lessac-medium'))
+
+    # These seven depend on `root`/`data_dir`/`log_dir`, so they can't use a
+    # simple default_factory with no arguments - resolved in __post_init__
+    # once root is known.
     wake_word: str = field(default='')
     log_dir: str = field(default='')
     data_dir: str = field(default='')
     memory_db_path: str = field(default='')
+    offline_stt_model_dir: str = field(default='')
+    offline_tts_model_dir: str = field(default='')
+    # Phase 2 (2026-08-16): structured JSON-lines audit trail for consequential
+    # actions (file delete/move, app close, shutdown/restart, confirmation
+    # prompts and their outcomes) - see audit.py's module docstring for why
+    # this is a separate file from log_dir's plain vortex.log rather than a
+    # replacement for it. Lives under log_dir alongside vortex.log since both
+    # are append-only operational records, just different formats/purposes.
+    audit_log_path: str = field(default='')
 
     def __post_init__(self):
         object.__setattr__(self, 'wake_word', os.getenv(
@@ -185,6 +257,19 @@ class VortexConfig:
         object.__setattr__(self, 'data_dir', os.path.join(self.root, 'data'))
         object.__setattr__(self, 'memory_db_path', os.getenv(
             'VORTEX_MEMORY_DB', os.path.join(self.data_dir, 'vortex_memory.db')))
+        # Both faster-whisper and piper-tts cache whatever they download under
+        # these directories on their own (huggingface_hub's snapshot cache /
+        # piper's voice-file layout respectively) - pointing download_root/
+        # download_dir at a folder under data_dir just keeps that cache inside
+        # VORTEX_HOME instead of scattered into each library's own default
+        # (~/.cache/huggingface, cwd), consistent with memory_db_path above.
+        # Neither library re-downloads once the target file already exists.
+        object.__setattr__(self, 'offline_stt_model_dir', os.getenv(
+            'VORTEX_OFFLINE_STT_MODEL_DIR', os.path.join(self.data_dir, 'offline_stt_models')))
+        object.__setattr__(self, 'offline_tts_model_dir', os.getenv(
+            'VORTEX_OFFLINE_TTS_MODEL_DIR', os.path.join(self.data_dir, 'offline_tts_models')))
+        object.__setattr__(self, 'audit_log_path', os.getenv(
+            'VORTEX_AUDIT_LOG', os.path.join(self.log_dir, 'audit.jsonl')))
 
     @classmethod
     def from_env(cls):

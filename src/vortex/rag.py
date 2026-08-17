@@ -15,10 +15,11 @@ copied into its Qdrant payload so retrieval doesn't need a Postgres round trip
 in the hot path - Postgres remains authoritative and re-ingestable if the
 Qdrant collection is ever rebuilt.
 
-Deliberately NOT built here: reranking, sparse/hybrid search, cross-document
-retrieval, or migrating conversation history off SQLite. This is scoped to
-"answer a question about one document, well," which is the concrete gap that
-justified adding this stack at all (see IMPLEMENTED.md).
+Deliberately NOT built here: cross-document retrieval, or migrating
+conversation history off SQLite (see memory.py - not attempted in this pass,
+scoped out as too large to do safely in one sitting; see IMPLEMENTED.md).
+This file is scoped to "answer a question about one document, well," which is
+the concrete gap that justified adding this stack at all.
 
 Page/section provenance (added 2026-08-16): `ensure_ingested(path, text)` kept
 its original signature (a caller in main.py passes an already-extracted flat
@@ -29,15 +30,39 @@ chunk carries where it actually came from. If extract_pages() fails or the
 format has no page/section structure, this falls back to chunking the flat
 `text` with page=section=None - retrieval and prompt assembly both already
 handle that (no page/section to cite, so none is claimed).
+
+Hybrid dense+sparse search and reranking (added 2026-08-16): `retrieve()` now
+pulls a candidate pool from two independent retrieval methods - Qdrant's dense
+cosine-similarity search (semantic/paraphrase-robust, but blurs exact tokens
+into nearby vector-space points) and BM25 keyword search via `rank_bm25` over
+the document's full chunk text (exact-term precision, no semantic
+understanding at all) - fuses them with Reciprocal Rank Fusion, then reranks
+the fused pool with a keyword-overlap heuristic before truncating to the
+final top_k. See `_bm25_rank`, `_reciprocal_rank_fusion`, and `_rerank` below
+for the reasoning behind each choice, including explicitly why this does NOT
+use a cross-encoder reranker: `sentence-transformers` (the standard choice)
+pulls in torch - verified via `pip install sentence-transformers --dry-run`
+before writing this, which resolved a 122MB Windows wheel (torch 2.13.0,
+cp311, win_amd64) plus transformers/tokenizers/safetensors/networkx/jinja2,
+and a real cross-encoder reranker model would be a *further*, separate
+download the first time it's actually used (typically tens to hundreds of MB
+more). That's a real footprint mismatch for an otherwise fully local,
+lightweight desktop app that already keeps numpy pinned to 1.x specifically
+to avoid destabilizing the ONNX wake-word stack - not installed here. Both
+new stages are individually off-switchable (`VORTEX_RAG_HYBRID_SEARCH`,
+`VORTEX_RAG_RERANK`) so either can be ruled out or backed out without a code
+change if it ever regresses answer quality or latency.
 """
 import hashlib
 import logging
 import os
+import re
 
 import ollama
 import psycopg2
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams, FieldCondition, Filter, MatchValue
+from rank_bm25 import BM25Okapi
 
 from . import documents
 
@@ -49,13 +74,46 @@ EMBED_DIM = 768  # nomic-embed-text's output size
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 TOP_K = 5
+# How many candidates each of dense/sparse search contributes going into
+# fusion, and how many fused candidates survive to the reranking pass, before
+# the final truncation to the caller's requested top_k. Deliberately wider
+# than TOP_K: fusion and reranking can only reorder what they're handed, so
+# the pool has to be generous enough that a chunk either single method ranked
+# just outside top_k still gets a chance to be promoted back up by the other
+# signal.
+CANDIDATE_POOL = 20
+RERANK_POOL = 10
+# The constant from the original Reciprocal Rank Fusion paper (Cormack,
+# Clarke & Buettcher, SIGIR 2009). Not sensitive to tuning here - see
+# _reciprocal_rank_fusion's docstring for what it does and why RRF was chosen
+# over a weighted-score blend.
+RRF_K = 60
 # Mirrors VortexConfig.document_page_numbers - see documents.py's OCR_ENABLED
 # comment for why this stays a plain module constant rather than a config.py
 # import (matching this file's own pre-existing pattern for POSTGRES_DSN etc.).
 INCLUDE_PAGE_NUMBERS = os.getenv('VORTEX_DOCUMENT_PAGE_NUMBERS', 'true').strip().lower() not in (
     '0', 'false', 'no', 'off')
+# Mirrors VortexConfig.rag_hybrid_search / rag_rerank (same non-import
+# pattern as INCLUDE_PAGE_NUMBERS above). Both default on; each is
+# independently switchable so either new stage can be ruled out - or turned
+# off for latency reasons, see IMPLEMENTED.md for the measured per-query
+# cost - without a code change.
+HYBRID_SEARCH_ENABLED = os.getenv('VORTEX_RAG_HYBRID_SEARCH', 'true').strip().lower() not in (
+    '0', 'false', 'no', 'off')
+RERANK_ENABLED = os.getenv('VORTEX_RAG_RERANK', 'true').strip().lower() not in (
+    '0', 'false', 'no', 'off')
 
 _log = logging.getLogger('vortex.rag')
+
+_TOKEN_RE = re.compile(r'[a-z0-9]+')
+
+
+def _tokenize(text):
+    """Lowercase alphanumeric tokens. Used by both BM25 and the keyword-overlap
+    reranker so a query and a chunk are compared on the same terms - e.g.
+    'SKU-48219-X' becomes ['sku', '48219', 'x'] consistently on both sides,
+    punctuation-insensitive."""
+    return _TOKEN_RE.findall(text.lower())
 
 
 def _embed(text):
@@ -116,6 +174,108 @@ def _chunk_with_provenance(path, text):
     return [{'content': c, 'page': None, 'section': None} for c in _chunk_text(text)]
 
 
+def _bm25_rank(corpus_texts, corpus_ids, query, top_k):
+    """Sparse (BM25) retrieval over one document's full chunk corpus. Returns
+    chunk ids ordered best-first.
+
+    BM25 scores a chunk higher when it contains the query's exact terms,
+    weighted by how rare those terms are across the corpus and normalized for
+    chunk length - unlike dense embedding similarity, it doesn't blur an
+    exact token (a product code, a specific number, an uncommon proper noun)
+    into a nearby point in vector space; it either literally contains the
+    token or it doesn't. That's the concrete, well-understood gap this
+    closes: dense retrieval is strong on paraphrase/semantic similarity and
+    comparatively weak on exact-keyword precision; BM25 is the reverse.
+    `rank_bm25` (BM25Okapi) is a small, pure-Python implementation of the
+    standard algorithm - its only dependency is numpy, which VORTEX already
+    pins for the ONNX wake-word stack, so this adds no meaningful footprint.
+    """
+    if not corpus_texts:
+        return []
+    tokenized_corpus = [_tokenize(t) for t in corpus_texts]
+    bm25 = BM25Okapi(tokenized_corpus)
+    scores = bm25.get_scores(_tokenize(query))
+    ranked = sorted(zip(corpus_ids, scores), key=lambda pair: pair[1], reverse=True)
+    # Exclude zero-score chunks: a chunk sharing literally no term with the
+    # query isn't a sparse "hit," just an artifact of BM25 scoring every
+    # corpus document. Including it would let fusion treat "no keyword
+    # overlap at all" as a weak positive signal instead of no signal.
+    return [cid for cid, score in ranked[:top_k] if score > 0]
+
+
+def _reciprocal_rank_fusion(ranked_id_lists, k=RRF_K):
+    """Combines multiple ranked-id lists (e.g. dense hits, sparse/BM25 hits)
+    into one fused ranking via Reciprocal Rank Fusion: each list contributes
+    1/(k + rank) to every id it contains (rank is the 0-indexed position in
+    that list), contributions are summed per id across all lists, and the
+    result is sorted descending. Returns a list of (id, fused_score) tuples.
+
+    RRF is the standard, simple choice for combining dense+sparse search
+    (it's what Qdrant's, Weaviate's, and Elasticsearch's own hybrid-search
+    features use internally) specifically because it only needs *rank order*,
+    not raw scores - cosine similarity (bounded 0..1) and BM25 scores
+    (unbounded, corpus- and query-length dependent) live on incomparable
+    scales, so a weighted-score blend would need ad-hoc normalization to keep
+    one method from dominating just because its numbers happen to run
+    larger. RRF sidesteps that entirely by only ever looking at position.
+    k=60 is deliberately not tuned per-corpus (see RRF_K above).
+    """
+    scores = {}
+    for id_list in ranked_id_lists:
+        for rank, cid in enumerate(id_list):
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+    return sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+
+
+def _keyword_overlap_score(query, text):
+    """Lightweight reranking signal: the fraction of the query's tokens that
+    literally appear in the chunk, plus a fixed bonus if the entire query
+    appears as a substring (case-insensitive) of the chunk - the strongest
+    possible signal for an exact-match query like "what is SKU-48219-X".
+
+    This is deliberately NOT a cross-encoder (see the module docstring for
+    why) - it's a cheap, fully explainable second opinion that specifically
+    rewards exact lexical match, correcting cases where RRF's rank-only
+    fusion still leaves a semantically-close-but-keyword-empty chunk ahead of
+    the chunk that actually contains the literal term being asked about.
+    """
+    q_tokens = set(_tokenize(query))
+    if not q_tokens:
+        return 0.0
+    t_tokens = set(_tokenize(text))
+    overlap = len(q_tokens & t_tokens) / len(q_tokens)
+    substring_bonus = 0.5 if query.strip().lower() in text.lower() else 0.0
+    return overlap + substring_bonus
+
+
+def _rerank(candidates, question, top_k):
+    """Reorders `candidates` (dicts with at least 'content' and a numeric
+    'fused_score' from RRF) by a composite of the normalized fused rank and
+    the keyword-overlap score above, then returns the top_k.
+
+    The fused RRF score is normalized to a 0..1 range across just this
+    candidate set first, so it's on a comparable scale to the keyword-overlap
+    score (0..1.5) before combining. Both signals matter and neither should
+    fully override the other: the fused rank already reflects both dense and
+    sparse evidence working together, while keyword overlap adds a sharper,
+    focused exact-match check on top of that - equal 0.5/0.5 weighting means
+    a strong exact-keyword match can promote a candidate, but a candidate
+    with excellent fused rank and merely average keyword overlap isn't
+    discarded just because one chunk happens to repeat the query's words.
+    """
+    if not candidates:
+        return []
+    max_fused = max(c['fused_score'] for c in candidates) or 1.0
+    scored = []
+    for c in candidates:
+        fused_norm = c['fused_score'] / max_fused
+        kw = _keyword_overlap_score(question, c['content'])
+        composite = 0.5 * fused_norm + 0.5 * kw
+        scored.append((composite, c))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [c for _, c in scored[:top_k]]
+
+
 class RagStore:
     def __init__(self):
         # Explicit short timeouts on both connections: Postgres/Qdrant are separate
@@ -128,6 +288,13 @@ class RagStore:
         self._init_postgres_schema()
         self._qdrant = QdrantClient(url=QDRANT_URL, timeout=5)
         self._init_qdrant_collection()
+        # doc_id -> list of {'id','content','page','section'} - this document's
+        # full chunk corpus, needed for BM25 (which has to score against every
+        # chunk to know term rarity, not just a top-k). Cached because a single
+        # document-QA session issues many retrieve() calls against an unchanged
+        # corpus; invalidated in ensure_ingested() whenever that document's
+        # chunks are rewritten (re-ingested with changed content).
+        self._corpus_cache = {}
 
     def _init_postgres_schema(self):
         with self._pg.cursor() as cur:
@@ -184,11 +351,34 @@ class RagStore:
                 cur.execute('DELETE FROM chunks WHERE document_id = %s', (doc_id,))
                 cur.execute('UPDATE documents SET content_hash = %s, ingested_at = now() WHERE id = %s',
                            (content_hash, doc_id))
+                # Pre-existing gap noticed while testing hybrid search (2026-08-16),
+                # fixed here: Postgres chunk rows for this doc_id were just deleted
+                # above, but nothing previously told Qdrant to drop the matching
+                # points - a re-ingested document's *old* chunk vectors stayed
+                # indexed forever under new SERIAL chunk ids never got assigned
+                # to, silently polluting every future dense search for this
+                # document with stale, no-longer-true content. Best-effort: a
+                # failed delete here shouldn't block re-ingestion (the new points
+                # about to be upserted below are what matters most), just leaves
+                # the old pollution in place for next time.
+                try:
+                    self._qdrant.delete(
+                        collection_name=QDRANT_COLLECTION,
+                        points_selector=Filter(must=[FieldCondition(key='document_id', match=MatchValue(value=doc_id))]),
+                    )
+                except Exception as e:
+                    _log.warning(f'Failed to clear stale Qdrant points for doc {doc_id} before re-ingesting: {e}')
             else:
                 cur.execute(
                     'INSERT INTO documents (path, filename, content_hash) VALUES (%s, %s, %s) RETURNING id',
                     (path, filename, content_hash))
                 doc_id = cur.fetchone()[0]
+
+        # Stale corpus (old chunk ids/text) would otherwise get served to
+        # BM25 for this doc_id until process restart - invalidate now that
+        # chunks are about to be rewritten. No-op for a brand new doc_id
+        # (nothing cached yet).
+        self._corpus_cache.pop(doc_id, None)
 
         points = []
         for idx, chunk in enumerate(_chunk_with_provenance(path, text)):
@@ -210,22 +400,93 @@ class RagStore:
             self._qdrant.upsert(collection_name=QDRANT_COLLECTION, points=points)
         return doc_id
 
-    def retrieve(self, doc_id, question, top_k=TOP_K):
-        """Top-k chunks (by cosine similarity to the question) from one document.
-        Returns a list of {'content', 'page', 'section'} dicts - callers that
-        only need the text can still do `c['content']`; build_rag_prompt below
-        is the intended consumer and uses 'page'/'section' for citations."""
+    def _dense_search(self, doc_id, question, limit):
+        """Dense (embedding cosine-similarity) search - the sole retrieval
+        path before hybrid search was added. Returns (ids, payloads): ids is
+        the ranked chunk-id list (best first), payloads maps id -> the
+        {'content','page','section'} dict retrieve() eventually returns, so
+        a dense hit's content doesn't need a second round trip to resolve."""
         query_vector = _embed(question)
         hits = self._qdrant.query_points(
             collection_name=QDRANT_COLLECTION,
             query=query_vector,
             query_filter=Filter(must=[FieldCondition(key='document_id', match=MatchValue(value=doc_id))]),
-            limit=top_k,
+            limit=limit,
         ).points
-        return [
-            {'content': h.payload['content'], 'page': h.payload.get('page'), 'section': h.payload.get('section')}
+        ids = [h.id for h in hits]
+        payloads = {
+            h.id: {'content': h.payload['content'], 'page': h.payload.get('page'), 'section': h.payload.get('section')}
             for h in hits
-        ]
+        }
+        return ids, payloads
+
+    def _get_chunk_corpus(self, doc_id):
+        """This document's full chunk corpus (id/content/page/section) from
+        Postgres, for BM25 - which needs the whole corpus, not just a top-k,
+        to score term rarity correctly. Cached per doc_id (see
+        self._corpus_cache's comment in __init__); on a Postgres error, logs
+        and returns an empty corpus rather than raising, so a transient
+        Postgres hiccup degrades retrieve() to dense-only instead of failing
+        the whole question."""
+        if doc_id in self._corpus_cache:
+            return self._corpus_cache[doc_id]
+        try:
+            with self._pg.cursor() as cur:
+                cur.execute(
+                    'SELECT id, content, page, section FROM chunks WHERE document_id = %s ORDER BY chunk_index',
+                    (doc_id,))
+                rows = cur.fetchall()
+            corpus = [{'id': r[0], 'content': r[1], 'page': r[2], 'section': r[3]} for r in rows]
+        except Exception as e:
+            _log.warning(f'BM25 corpus fetch failed for doc {doc_id}, falling back to dense-only: {e}')
+            corpus = []
+        self._corpus_cache[doc_id] = corpus
+        return corpus
+
+    def retrieve(self, doc_id, question, top_k=TOP_K):
+        """Top-k chunks for one document, most relevant first. Returns a list
+        of {'content', 'page', 'section'} dicts - callers that only need the
+        text can still do `c['content']`; build_rag_prompt below is the
+        intended consumer and uses 'page'/'section' for citations. Signature
+        and return shape are unchanged from the dense-only version, so
+        main.py's call site needs no edits.
+
+        When HYBRID_SEARCH_ENABLED (default on): fuses dense (Qdrant) and
+        sparse (BM25) candidate pools via Reciprocal Rank Fusion, then - when
+        RERANK_ENABLED (default on) - reranks the fused pool with a
+        keyword-overlap heuristic before truncating to top_k. When either
+        flag is off, falls back toward the simpler/cheaper path (dense-only
+        search, or fused-but-unreranked) - see module docstring for why each
+        stage exists and its cost.
+        """
+        if not HYBRID_SEARCH_ENABLED:
+            dense_ids, dense_payloads = self._dense_search(doc_id, question, limit=top_k)
+            return [dense_payloads[cid] for cid in dense_ids]
+
+        pool = max(CANDIDATE_POOL, top_k)
+        dense_ids, dense_payloads = self._dense_search(doc_id, question, limit=pool)
+
+        corpus = self._get_chunk_corpus(doc_id)
+        corpus_by_id = {c['id']: c for c in corpus}
+        sparse_ids = _bm25_rank(
+            [c['content'] for c in corpus], [c['id'] for c in corpus], question, top_k=pool
+        ) if corpus else []
+
+        fused = _reciprocal_rank_fusion([dense_ids, sparse_ids])
+        rerank_pool = max(RERANK_POOL, top_k)
+        candidates = []
+        for cid, score in fused[:rerank_pool]:
+            payload = dense_payloads.get(cid) or corpus_by_id.get(cid)
+            if payload is None:
+                continue  # defensive: id came from fusion but neither source could resolve it
+            candidates.append({
+                'id': cid, 'content': payload['content'],
+                'page': payload.get('page'), 'section': payload.get('section'),
+                'fused_score': score,
+            })
+
+        chunks = _rerank(candidates, question, top_k) if RERANK_ENABLED else candidates[:top_k]
+        return [{'content': c['content'], 'page': c.get('page'), 'section': c.get('section')} for c in chunks]
 
     def close(self):
         self._pg.close()

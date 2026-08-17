@@ -20,6 +20,12 @@ dependencies = [
     "psutil==7.2.2",
     "python-dotenv==1.2.2",
     "ollama==0.6.2",
+    # Phase 2 (2026-08-16): voice-triggered file delete goes to the Windows
+    # Recycle Bin via send2trash instead of a permanent os.remove - a small,
+    # well-established package for exactly this, not gated behind an
+    # optional extra since file operations are core OS automation, not an
+    # add-on subsystem like documents/browser/rag below.
+    "send2trash==2.1.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +38,40 @@ voice = [
     "edge-tts==7.2.8",
     "openwakeword==0.6.0",
     "onnxruntime==1.17.3",
+    # edge-tts already pulls this in transitively for its own websocket calls;
+    # pinned explicitly here too because voice/tts.py now imports it directly
+    # (aiohttp.ClientConnectionError is what routes a cloud-TTS failure to the
+    # offline fallback below - see _synth's _NETWORK_ERRORS).
+    "aiohttp==3.14.3",
+]
+# Phase 1 offline STT/TTS fallback (faster-whisper + piper-tts), added
+# 2026-08-16 - see config.py's offline_fallback_enabled docstring and
+# IMPLEMENTED.md's Phase 1 row. Kept OUT of the base `voice` extra and out of
+# `all` below, on purpose, for two concrete reasons verified in this
+# environment (not assumed):
+#   1. Real size/install friction: faster-whisper pulls in ctranslate2 (a
+#      bundled CPU inference engine, ~19MB wheel) and av (bundled ffmpeg,
+#      ~28MB wheel) on top of itself; piper-tts is another ~34MB wheel -
+#      combined, meaningfully more than the rest of the `voice` extra, before
+#      either engine has even downloaded its actual model weights (faster-
+#      whisper's base.en model is ~141MB on first use; the default piper
+#      voice below is tens of MB more), both fetched lazily on first use, not
+#      at pip-install time.
+#   2. piper-tts (PyPI project "piper-tts", the OHF-voice/piper1-gpl
+#      successor to the original Piper project) is GPL-3.0-or-later - a
+#      different license than every other dependency in this file, which is
+#      worth a user's explicit opt-in rather than being silently pulled in by
+#      `voice` or `all`.
+# Both prebuilt Windows wheels installed cleanly in this environment with no
+# separate build toolchain (confirmed via `pip install`, not assumed) - the
+# plan's original by-name mentions (faster-whisper, Piper) turned out to be
+# realistically installable on Windows via pip after all.
+# VORTEX_OFFLINE_FALLBACK_ENABLED defaults to on regardless of whether this
+# extra is installed - without it, stt.py/tts.py's offline paths just log
+# "unavailable" and behave exactly as if the kill switch were off.
+voice-offline = [
+    "faster-whisper==1.2.1",
+    "piper-tts==1.7.0",
 ]
 # Tray icon and Windows-specific OS automation (protected-process names, .exe
 # app launching, lock/shutdown commands are Windows-only regardless of this
@@ -64,6 +104,9 @@ browser = [
 rag = [
     "psycopg2-binary==2.9.12",
     "qdrant-client==1.18.0",
+    # Sparse (BM25) half of hybrid dense+sparse retrieval - see requirements.txt's
+    # comment for why this and not sentence-transformers/torch.
+    "rank_bm25==0.2.2",
 ]
 # Only needed to run tools/wakeword/build_hey_vortex.py (retraining the wake
 # model) - not needed to run VORTEX itself. Previously undeclared anywhere,
@@ -78,6 +121,10 @@ dev = [
     "pytest==9.1.1",
 ]
 # Everything needed to actually run `python -m src.vortex.main` today.
+# Deliberately excludes voice-offline - see that extra's comment above for
+# why (size + a differing GPL license); VORTEX runs fine without it, just
+# without the offline STT/TTS fallback actually doing anything on a network
+# outage. Install it explicitly (`pip install -e .[voice-offline]`) to get that.
 all = [
     "vortex-ai[voice,windows,documents,browser,rag]",
 ]
