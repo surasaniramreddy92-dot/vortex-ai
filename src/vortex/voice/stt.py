@@ -10,6 +10,7 @@ mic - preserved here exactly, not reverted.
 """
 import collections
 import contextlib
+import os
 import time
 
 import numpy as np
@@ -246,17 +247,29 @@ class SpeechToText:
                 cmd = self.recognizer.recognize_google(audio).lower().strip()
                 self.log(f'Heard: {cmd}')
                 return cmd
-            except sr.RequestError as e:
-                # Couldn't reach Google at all (network/DNS/timeout) - the one
-                # case the offline fallback is for. sr.UnknownValueError (Google
-                # reached fine, couldn't parse the audio) deliberately is NOT
-                # caught here and falls through to the outer except below,
-                # unchanged from before this fallback existed.
-                self.log(f'Cloud STT unreachable ({type(e).__name__}: {e}); trying offline fallback')
+            except (sr.RequestError, sr.UnknownValueError) as e:
+                # Originally (2026-08-16) only sr.RequestError landed here -
+                # sr.UnknownValueError meant "Google was reached fine, the
+                # audio just wasn't clear enough," and falling back to a
+                # smaller local model for that was judged a downgrade, not a
+                # fallback. Real evidence overturned that on 2026-08-17: a
+                # live UnknownValueError capture was saved
+                # (logs/debug_captures/), inspected (a clean, real-speech RMS
+                # envelope, not noise or silence), fed to Google directly
+                # (reproduced the same UnknownValueError) and to
+                # faster-whisper directly (correctly transcribed it, language
+                # probability 1.0). Google's cloud STT is, at least for this
+                # project's AGC-boosted audio profile, demonstrably *less*
+                # reliable than the "fallback" model on real captured audio -
+                # so UnknownValueError now also tries offline, same as a
+                # network failure.
+                self.log(f'Cloud STT failed ({type(e).__name__}: {e}); trying offline fallback')
                 cmd = self._recognize_offline(audio)
                 if cmd:
                     self.log(f'Heard (offline): {cmd}')
                     return cmd
+                if isinstance(e, sr.UnknownValueError):
+                    self._save_debug_capture(audio)
                 self.log('Offline STT fallback unavailable or produced nothing')
                 return None
         except Exception as e:
@@ -264,3 +277,27 @@ class SpeechToText:
             # is exactly why every past "Capture error:" line here showed nothing.
             self.log(f'Capture error: {type(e).__name__}: {e}')
             return None
+
+    _debug_capture_index = 0
+
+    def _save_debug_capture(self, audio):
+        """Writes the boosted audio actually sent to recognize_google() to
+        logs/debug_captures/ (created if needed), rotating through a small
+        fixed set of filenames so this never grows unbounded. Best-effort -
+        a failure here must never break capture_command() itself."""
+        try:
+            import wave
+            debug_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))), '..', 'logs', 'debug_captures')
+            debug_dir = os.path.normpath(debug_dir)
+            os.makedirs(debug_dir, exist_ok=True)
+            self.__class__._debug_capture_index = (self.__class__._debug_capture_index + 1) % 5
+            path = os.path.join(debug_dir, f'capture_{self.__class__._debug_capture_index}.wav')
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(audio.sample_width)
+                wf.setframerate(audio.sample_rate)
+                wf.writeframes(audio.get_raw_data())
+            self.log(f'[diag] saved failed capture to {path}')
+        except Exception as e:
+            self.log(f'[diag] failed to save debug capture: {e}')

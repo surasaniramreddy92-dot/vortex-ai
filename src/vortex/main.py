@@ -817,22 +817,25 @@ class Vortex:
         greeting's critical path, means that cost is usually already paid by the
         time you actually speak.
 
-        Deliberately does NOT eagerly warm the offline STT/TTS fallback models
-        (faster-whisper/piper-tts) anymore - live testing on 2026-08-17 found
-        the wake model, run in isolation on a real captured utterance, scored
-        meaningfully higher (0.65) than the same audio scored inside the live
-        process (near zero) - real evidence of resource contention, and the
-        offline models' background thread pools (ctranslate2, onnxruntime,
-        alongside openWakeWord's own onnxruntime session, all competing for
-        the same 4 physical cores) are a plausible contributor given they're
-        now permanently resident once loaded. Wake/barge-in responsiveness is
-        this project's constant, everyday priority; offline fallback exists
-        for a network outage that hasn't actually happened once in extensive
-        testing. Both engines still lazy-load correctly on first real use
-        (stt.py/tts.py's _get_offline_model/_get_offline_voice, unchanged) -
-        this only removes the *eager* load, trading a few extra seconds on
-        the first fallback during a genuine future outage for a lighter,
-        more responsive process the rest of the time."""
+        Offline STT (faster-whisper) IS eagerly warmed here; offline TTS
+        (piper-tts) deliberately is NOT. These used to be symmetric (both
+        eager, then both lazy - see CHANGELOG.md 2026-08-17) but stopped
+        being equivalent once STT's offline fallback trigger was broadened
+        the same day: it used to only engage on a real network failure
+        (rare - hasn't happened once in extensive testing), but real evidence
+        (a live-captured, genuinely-failed clip that Google's cloud STT
+        couldn't parse but faster-whisper transcribed correctly, language
+        probability 1.0) showed cloud STT is measurably less reliable than
+        the "fallback" model for this project's AGC-boosted audio profile -
+        so STT's offline model now also engages on sr.UnknownValueError,
+        which is common, not rare. Leaving it lazy would mean the first
+        capture failure in every session pays a 3.8-8s cold-load penalty on
+        top of already having failed once - worse, not better, for the exact
+        responsiveness this change is trying to protect. TTS's offline
+        fallback trigger is unchanged (network failure only, still rare), so
+        it stays lazy - no evidence yet that eagerly loading it is worth its
+        share of the ~200MB combined memory cost measured on 2026-08-17."""
+        self.stt.ensure_offline_ready()
         try:
             ollama.chat(model=MODEL, messages=[{'role': 'user', 'content': 'hi'}], keep_alive='30m')
         except Exception as e:

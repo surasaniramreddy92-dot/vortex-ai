@@ -207,16 +207,21 @@ class VortexConfig:
     # outage even though wake detection is fully local - see IMPLEMENTED.md's
     # Phase 1 row. This is a *fallback*, not a replacement: cloud is tried
     # first every time (better quality, matches existing behavior exactly when
-    # online) and the offline engine only engages when the cloud call fails
-    # for a network-reachability reason specifically - see stt.py's
-    # capture_command (sr.RequestError, not sr.UnknownValueError) and tts.py's
-    # _synth (aiohttp.ClientConnectionError/asyncio.TimeoutError, not edge-tts's
-    # own EdgeTTSException family). One kill switch covers both directions,
-    # matching the ocr_enabled pattern just above: default on, but a genuine
-    # no-op wherever faster-whisper/piper-tts aren't installed or their model
-    # files aren't cached yet - both stt.py and tts.py probe for this
-    # explicitly and log rather than assuming, same as documents.py's
-    # _ocr_available().
+    # online). TTS's offline engine only engages on a genuine network-
+    # reachability failure - tts.py's _synth
+    # (aiohttp.ClientConnectionError/asyncio.TimeoutError, not edge-tts's own
+    # EdgeTTSException family). STT's trigger is broader as of 2026-08-17:
+    # stt.py's capture_command falls back on sr.RequestError (network) AND
+    # sr.UnknownValueError (Google reached fine, couldn't parse the audio) -
+    # widened from network-only after real evidence a live UnknownValueError
+    # capture, which Google failed to transcribe, transcribed correctly via
+    # faster-whisper (language probability 1.0); cloud STT is measurably less
+    # reliable than the "fallback" for this project's AGC-boosted audio. One
+    # kill switch covers both directions, matching the ocr_enabled pattern
+    # just above: default on, but a genuine no-op wherever faster-whisper/
+    # piper-tts aren't installed or their model files aren't cached yet -
+    # both stt.py and tts.py probe for this explicitly and log rather than
+    # assuming, same as documents.py's _ocr_available().
     offline_fallback_enabled: bool = field(
         default_factory=lambda: _bool_env('VORTEX_OFFLINE_FALLBACK_ENABLED', True))
     # faster-whisper model size. Measured on this dev machine (CPU-only, no
