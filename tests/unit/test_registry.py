@@ -245,6 +245,37 @@ def test_new_file_commands_are_registered(v):
             'copy_file', 'rename_file_prompt'} <= names
 
 
+def test_read_screen_is_registered_and_dispatches(v, monkeypatch):
+    """"read my screen" / "what's on my screen" (added 2026-08-17, direct
+    user request) must reach screen.read_screen_text(), not fall through to
+    read_document's broad "read (?:me )?(.+)" catch-all (which would try to
+    find a document literally named "my screen")."""
+    from vortex import screen as screen_reader
+    monkeypatch.setattr(screen_reader, 'read_screen_text',
+                         lambda: ('some screen text', None))
+
+    for phrase in ('read my screen', 'read the screen', "what's on my screen"):
+        v.spoken.clear()
+        v.execute(phrase)
+        assert v.spoken == ['some screen text'], f'{phrase!r} did not reach h_read_screen'
+
+
+def test_read_screen_speaks_error_when_unavailable(v, monkeypatch):
+    from vortex import screen as screen_reader
+    monkeypatch.setattr(screen_reader, 'read_screen_text',
+                         lambda: (None, "I can't read the screen right now."))
+    v.execute('read my screen')
+    assert v.spoken == ["I can't read the screen right now."]
+
+
+def test_read_my_document_still_reaches_read_document_not_screen(v):
+    """Sanity check the ordering didn't break the pre-existing catch-all:
+    "read <actual document name>" must still route to h_read_document, not
+    get accidentally swallowed by the new read_screen entry."""
+    v.execute('read my_notes.txt')
+    last_call(v, 'summarize_document')
+
+
 def test_list_files_matches_on_as_well_as_in(v, monkeypatch, tmp_path):
     """Regression test: a live acoustic test on 2026-08-17 found "list files
     on desktop" (natural phrasing a real user actually said) fell through to
