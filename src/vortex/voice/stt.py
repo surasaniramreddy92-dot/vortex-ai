@@ -239,7 +239,39 @@ class SpeechToText:
             self.log(f'Offline STT transcription error: {type(e).__name__}: {e}')
             return None
 
-    def capture_command(self, timeout=8):
+    def capture_command(self, timeout=8, allow_offline_on_unclear=True):
+        """allow_offline_on_unclear gates ONLY the UnknownValueError path
+        below (a real network failure - sr.RequestError - always tries
+        offline regardless of this flag; that part is unaffected and still
+        safe in any context).
+
+        Found live 2026-08-17, hours after the UnknownValueError fallback
+        above was added and initially looked like a clear win: during
+        session-continuation listening (_active_session's loop, following up
+        after a fresh wake without requiring "Hey Vortex" again), *any*
+        ambient sound Google couldn't parse - room noise, a TV, adjacent
+        conversation - now also got a "second opinion" from the offline
+        model, which (a well-documented Whisper-family behavior, not unique
+        to this integration) can fabricate a plausible-sounding command from
+        audio that was never actually speech directed at VORTEX. Because
+        executing *any* transcription - even a hallucinated one - keeps the
+        active session alive for another session_timeout window, this
+        cascaded: one fabricated "command" produced a spoken response, which
+        reset the follow-up listening window, which captured more ambient
+        noise, which fabricated another "command," repeating until 18s of
+        genuine silence finally occurred. Observed live: a long run of
+        completely unprompted responses ("Did you know jellyfish are
+        immortal?", "It was a pleasure assisting you.", ...) with no real
+        user input anywhere in between.
+
+        Fix: the offline "second opinion" is only trustworthy immediately
+        after a deliberate, intentional signal - saying "Hey Vortex" - not
+        during passive follow-up listening, where the prior odds that any
+        given sound is actually a command are much lower. voice/session.py's
+        active_session() passes allow_offline_on_unclear=True only for the
+        first capture_command() call in a session (right after the wake/
+        barge-in acknowledgment), False for every continuation call after
+        that."""
         try:
             with self._own_mic():
                 raw_bytes = self._record_command(timeout=timeout, phrase_time_limit=8)
@@ -260,29 +292,31 @@ class SpeechToText:
                 cmd = self.recognizer.recognize_google(audio).lower().strip()
                 self.log(f'Heard: {cmd}')
                 return cmd
-            except (sr.RequestError, sr.UnknownValueError) as e:
-                # Originally (2026-08-16) only sr.RequestError landed here -
-                # sr.UnknownValueError meant "Google was reached fine, the
-                # audio just wasn't clear enough," and falling back to a
-                # smaller local model for that was judged a downgrade, not a
-                # fallback. Real evidence overturned that on 2026-08-17: a
-                # live UnknownValueError capture was saved
-                # (logs/debug_captures/), inspected (a clean, real-speech RMS
-                # envelope, not noise or silence), fed to Google directly
-                # (reproduced the same UnknownValueError) and to
-                # faster-whisper directly (correctly transcribed it, language
-                # probability 1.0). Google's cloud STT is, at least for this
-                # project's AGC-boosted audio profile, demonstrably *less*
-                # reliable than the "fallback" model on real captured audio -
-                # so UnknownValueError now also tries offline, same as a
-                # network failure.
+            except sr.RequestError as e:
+                # Real network failure - always worth an offline attempt,
+                # regardless of session state; see capture_command's own
+                # docstring for why this is unaffected by the 2026-08-17 fix.
                 self.log(f'Cloud STT failed ({type(e).__name__}: {e}); trying offline fallback')
                 cmd = self._recognize_offline(audio)
                 if cmd:
                     self.log(f'Heard (offline): {cmd}')
                     return cmd
-                if isinstance(e, sr.UnknownValueError):
+                self.log('Offline STT fallback unavailable or produced nothing')
+                return None
+            except sr.UnknownValueError as e:
+                if not allow_offline_on_unclear:
+                    # Session-continuation capture - see this method's
+                    # docstring for the hallucination-cascade this avoids.
                     self._save_debug_capture(audio)
+                    self.log('Cloud STT failed (UnknownValueError) during session '
+                             'continuation - not trying offline (see 2026-08-17 fix)')
+                    return None
+                self.log(f'Cloud STT failed ({type(e).__name__}: {e}); trying offline fallback')
+                cmd = self._recognize_offline(audio)
+                if cmd:
+                    self.log(f'Heard (offline): {cmd}')
+                    return cmd
+                self._save_debug_capture(audio)
                 self.log('Offline STT fallback unavailable or produced nothing')
                 return None
         except Exception as e:

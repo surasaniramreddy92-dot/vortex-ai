@@ -121,6 +121,40 @@ def test_recovers_for_the_next_command_after_an_interruption():
     assert ok and tts.played == ['Opening Chrome now.']
 
 
+# ---------- session-continuation offline-fallback gating ----------
+
+def test_active_session_only_allows_offline_fallback_on_first_capture():
+    """Direct test of the actual mechanism behind the 2026-08-18
+    hallucination-cascade fix: Session.active_session() must pass
+    allow_offline_on_unclear=True to capture_command() only on the first
+    call in a session (right after the wake/barge-in acknowledgment) and
+    False on every call after that, regardless of how many follow-up
+    commands are executed."""
+    from vortex.voice.barge_in import BargeIn
+    from vortex.voice.session import Session
+
+    barge_in = BargeIn()
+    calls = []
+    commands = ['first command', 'second command', 'third command']
+
+    def fake_capture_command(timeout=8, allow_offline_on_unclear=True):
+        calls.append(allow_offline_on_unclear)
+        return commands.pop(0) if commands else None
+
+    session = Session(
+        events=None, barge_in=barge_in, session_timeout=8, wake_watchdog_timeout=5,
+        capture_command=fake_capture_command, execute=lambda cmd: None,
+        speak=lambda text: None, greet=lambda: None, warm_up=lambda: None,
+        get_last_audio_at=lambda: 0, recover_wake_stream=lambda: None,
+        is_capturing=lambda: False, clear_awaiting_confirmation=lambda: None,
+        log=lambda msg: None, is_running=lambda: True)
+
+    session.active_session()
+
+    assert calls == [True, False, False, False], (
+        f'expected only the first capture to allow offline fallback, got {calls}')
+
+
 # ---------- worker dispatch ----------
 
 @pytest.fixture
@@ -140,7 +174,8 @@ def test_barge_in_skips_yes_boss_prompt_and_executes_the_new_command(vortex_inst
     v = vortex_instance
     v.spoken, v.commands = [], ['open chrome']
     v.speak = lambda text: v.spoken.append(text) or True
-    v.capture_command = lambda timeout=8: v.commands.pop(0) if v.commands else None
+    v.capture_command = lambda timeout=8, allow_offline_on_unclear=True: (
+        v.commands.pop(0) if v.commands else None)
     v.execute = lambda cmd: v.spoken.append(f'EXEC:{cmd}')
     v.greet = lambda: None
 

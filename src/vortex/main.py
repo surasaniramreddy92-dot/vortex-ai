@@ -162,7 +162,8 @@ class Vortex:
         self.session = Session(
             events=self.events, barge_in=self.barge_in, session_timeout=SESSION_TIMEOUT,
             wake_watchdog_timeout=WAKE_WATCHDOG_TIMEOUT,
-            capture_command=lambda timeout=8: self.capture_command(timeout=timeout),
+            capture_command=lambda timeout=8, allow_offline_on_unclear=True: self.capture_command(
+                timeout=timeout, allow_offline_on_unclear=allow_offline_on_unclear),
             execute=lambda cmd: self.execute(cmd),
             speak=lambda text: self.speak(text),
             greet=lambda: self.greet(),
@@ -230,8 +231,8 @@ class Vortex:
 
     # ---------- speech input (voice/stt.py owns the actual logic) ----------
 
-    def capture_command(self, timeout=8):
-        return self.stt.capture_command(timeout=timeout)
+    def capture_command(self, timeout=8, allow_offline_on_unclear=True):
+        return self.stt.capture_command(timeout=timeout, allow_offline_on_unclear=allow_offline_on_unclear)
 
     # ---------- reasoning ----------
 

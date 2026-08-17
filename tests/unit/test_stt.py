@@ -108,6 +108,45 @@ def test_unknown_value_error_with_no_offline_result_saves_debug_capture():
     stt._save_debug_capture.assert_called_once()
 
 
+def test_unknown_value_error_skips_offline_when_not_allowed():
+    """Regression test for the hallucination-cascade bug found live
+    2026-08-18: during session-continuation listening (not right after a
+    fresh "Hey Vortex"), trying the offline model on every ambient sound
+    Google couldn't parse let it fabricate plausible-sounding "commands"
+    from noise, get them answered, and keep the session alive for another
+    listening window - a real, observed cascade of entirely unprompted
+    responses. allow_offline_on_unclear=False (what
+    voice/session.py's active_session() passes for every capture after the
+    first one in a session) must skip the offline attempt entirely on
+    UnknownValueError and just report no capture, same as the pre-2026-08-17
+    behavior."""
+    stt = make_stt()
+    stt.recognizer.recognize_google.side_effect = sr.UnknownValueError()
+    stt._recognize_offline = Mock(return_value='some hallucinated text')
+    stt._save_debug_capture = Mock()
+
+    result = stt.capture_command(allow_offline_on_unclear=False)
+
+    assert result is None
+    stt._recognize_offline.assert_not_called()
+    stt._save_debug_capture.assert_called_once()
+
+
+def test_request_error_still_falls_back_when_offline_on_unclear_is_false():
+    """A real network failure (sr.RequestError) must still try offline
+    regardless of allow_offline_on_unclear - that flag only gates the
+    UnknownValueError path (see capture_command's docstring); a genuine
+    outage is a genuine outage no matter where in a session it happens."""
+    stt = make_stt()
+    stt.recognizer.recognize_google.side_effect = sr.RequestError('no internet connection')
+    stt._recognize_offline = Mock(return_value='turn off the lights')
+
+    result = stt.capture_command(allow_offline_on_unclear=False)
+
+    assert result == 'turn off the lights'
+    stt._recognize_offline.assert_called_once()
+
+
 def test_offline_fallback_returning_nothing_is_reported_as_no_capture():
     """If the offline model is unavailable/unclear too, capture_command should
     still return None cleanly (not raise) - same contract as a normal miss."""

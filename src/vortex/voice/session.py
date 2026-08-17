@@ -52,11 +52,26 @@ class Session:
 
     def active_session(self):
         """Keep listening for follow-ups (confirmations, next command) without
-        requiring the wake word again, until session_timeout of silence."""
+        requiring the wake word again, until session_timeout of silence.
+
+        allow_offline_on_unclear is True only for the first capture_command()
+        call here (right after the wake/barge-in acknowledgment - a
+        deliberate, intentional "Hey Vortex" from the user) and False for
+        every continuation call after that. Found live 2026-08-17: letting
+        every follow-up capture try the offline STT "second opinion" on
+        audio Google couldn't parse meant ambient noise during passive
+        listening (no fresh wake, just this loop still open) could get
+        fabricated into a plausible-sounding command, get answered, and keep
+        the session alive for another window - a real, observed cascade of
+        entirely unprompted responses. See stt.py's capture_command
+        docstring for the full mechanism."""
+        first = True
         while self.is_running():
             if self.barge_in.stop_speaking.is_set():
                 return
-            cmd = self.capture_command(timeout=self.session_timeout)
+            cmd = self.capture_command(timeout=self.session_timeout,
+                                        allow_offline_on_unclear=first)
+            first = False
             if cmd is None:
                 self.log('Session timed out, returning to standby')
                 self.clear_awaiting_confirmation()
