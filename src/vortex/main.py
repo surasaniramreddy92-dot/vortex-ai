@@ -24,6 +24,8 @@ from .browser import BrowserAgent
 from .rag import RagStore, build_rag_prompt
 from .config import VortexConfig
 from . import files as fileops
+from . import screen as screen_reader
+from . import popup
 from .audit import AuditLog
 from .voice.barge_in import BargeIn
 from .voice.audio import AudioProcessor
@@ -613,6 +615,23 @@ class Vortex:
         def h_click(cmd, m):
             self.speak(self.browser.click_text(m.group(1).strip()))
 
+        # ---- screen reading (2026-08-17, direct user request) ----
+
+        def h_read_screen(cmd, m):
+            # Reuses the num_predict/system-prompt-driven brevity the LLM
+            # path already relies on isn't available here - this speaks raw
+            # OCR'd screen text directly, not an LLM summary of it, so a
+            # busy screen could genuinely produce a long readout. That's
+            # accepted as correct (it's reading what's actually there, not
+            # generating prose) rather than truncated silently; a summarized
+            # version would be a different, heavier feature (screen content
+            # through the LLM) not asked for here.
+            text, err = screen_reader.read_screen_text()
+            if err:
+                self.speak(err)
+                return
+            self.speak(text)
+
         # ---- file operations / search (Phase 2, 2026-08-16) ----
         # "search for file(s)..."/"find file..." is checked before the
         # generic web-search entry above's pattern (`search(?: the web)? for
@@ -632,6 +651,10 @@ class Vortex:
             if not matches:
                 self.speak(f"I couldn't find any files matching {query}.")
                 return
+            # Popup opens on its own thread and returns immediately, right
+            # before speak() starts - the visual list and the spoken summary
+            # begin together, matching direct user request 2026-08-17.
+            popup.show_file_popup(matches[:20], title='Search results')
             shown = ', '.join(f'{p.name}, in {p.parent.name}' for p in matches[:5])
             plural = 's' if len(matches) != 1 else ''
             self.speak(f'I found {len(matches)} matching file{plural}: {shown}.')
@@ -649,6 +672,7 @@ class Vortex:
             if not entries:
                 self.speak('No files found.')
                 return
+            popup.show_file_popup(entries[:50], title='Files')
             if dir_name:
                 shown = ', '.join(e['name'] for e in entries[:10])
             else:
@@ -754,6 +778,11 @@ class Vortex:
              'handler': h_close_browser, 'destructive': False, 'description': 'Close the automated browser session.'},
             {'name': 'read_page', 'matcher': search(r"(?:read|what'?s on) (?:the |this )?page"),
              'handler': h_read_page, 'destructive': False, 'description': 'Read back the current browser page.'},
+            # Checked before read_document's broad "read (?:me )?(.+)" catch-all
+            # below, for the same reason read_page is - otherwise "read my
+            # screen" would be interpreted as "find a document named my screen".
+            {'name': 'read_screen', 'matcher': search(r"(?:read|what'?s on) (?:my |the |this )?screen"),
+             'handler': h_read_screen, 'destructive': False, 'description': 'OCR and read back the current screen.'},
             # YouTube search-and-play is checked before the generic "open (.+)"
             # pattern below, which used to swallow phrases like "open youtube and
             # play X" whole and fall through to a dumb literal-phrase web search

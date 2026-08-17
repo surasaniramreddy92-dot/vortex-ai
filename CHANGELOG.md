@@ -8,6 +8,43 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-17
 
+### Added (two direct user feature requests)
+- **"Read my screen."** New `src/vortex/screen.py`: screenshots the current
+  screen (`PIL.ImageGrab`) and OCRs it (reusing `documents.py`'s existing
+  Tesseract probe/dependency rather than a second copy of the same "is OCR
+  actually usable" check), then speaks the extracted text back. New
+  registry entry (`read_screen`, matching "read my screen"/"read the
+  screen"/"what's on my screen"), checked before `read_document`'s broad
+  "read (?:me )?(.+)" catch-all so it doesn't get misinterpreted as "find a
+  document named my screen." Verified directly: screen capture works for
+  real (a genuine 1920x1080 screenshot). **Honest gap, same as document
+  OCR:** actually reading text needs the Tesseract binary installed, which
+  isn't set up on this dev machine - confirmed the code degrades correctly
+  to a clear spoken explanation rather than silently failing or claiming it
+  read something it didn't.
+- **File-listing popup.** New `src/vortex/popup.py`: when `list_files`/
+  `search_files` run, a small window opens showing each result as
+  "filename (TYPE) - Location", at the same moment the spoken summary
+  starts (both fire together in `h_list_files`/`h_search_files`, right
+  before `self.speak(...)`), matching a direct request for a synchronized
+  visual + spoken listing instead of a spoken-only one. Runs tkinter on its
+  own dedicated thread with its own independent `Tk()` root - never shared
+  across threads, which Tkinter doesn't support safely - so `show_file_popup`
+  returns immediately and never blocks the voice worker thread waiting for
+  the window to be closed. A new call closes any previous popup first, so
+  repeated listings don't pile up windows. Verified directly: a real,
+  visible window opened with the correct title while the caller returned
+  in well under a second. Best-effort like every other optional feature in
+  this project - a failure to open the window (no display, tkinter
+  unavailable) logs and stops, it never breaks the voice response that's
+  already speaking the same information.
+- Both features gained real, direct unit test coverage: `tests/unit/
+  test_screen.py` (12 cases covering the degrade-gracefully contract),
+  `tests/unit/test_popup.py` (formatting + non-blocking + failure-handling),
+  and new `test_registry.py` cases proving `read_screen` dispatches
+  correctly and doesn't disturb the pre-existing `read_document` routing.
+  164/164 tests pass.
+
 ### Fixed (direct user feedback after live testing)
 - **File listing no longer reads back full paths, and now says which folder
   each file is in instead of a bare, unattributed name.** Direct user
