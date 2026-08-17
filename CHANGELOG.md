@@ -8,6 +8,41 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-17
 
+### Fixed (direct user feedback after live testing)
+- **File listing no longer reads back full paths, and now says which folder
+  each file is in instead of a bare, unattributed name.** Direct user
+  feedback: reading a raw path (`C:\Users\...\Desktop\report.pdf`) out loud
+  is exactly the kind of thing that shouldn't be spoken - long, awkward,
+  not actionable by ear. Turned out `list_files()` was already filename-
+  only, never full paths - the earlier complaint was from before the
+  `list_files` "on"/"in" matcher fix (commit `385b1c4`'s predecessor)
+  landed, when "list files on desktop" fell through to the LLM fallback
+  entirely and it hallucinated fake generic paths. What was genuinely
+  missing: when combining multiple folders (`list_files(dir_name=None)`,
+  e.g. plain "list files"), the result was a flat list of names with no
+  indication of *which* folder each came from - not useful if you actually
+  want to go find one. `files.list_files()` now returns `{'name', '
+  location'}` entries instead of bare strings; `main.py`'s `h_list_files`/
+  `h_search_files` speak "name, in Location" (e.g. "report.pdf, in
+  Desktop") when multiple folders are involved, and just the plain name
+  when a specific folder was already named in the query (repeating it for
+  every file would be redundant). Verified live: "list files" (no folder
+  named) now speaks each result with its folder attached.
+- **Offline STT hallucination filter.** Separately found during the same
+  testing session (not the user's report, but real evidence from live use):
+  faster-whisper - a well-documented Whisper-family failure mode - can
+  produce fluent-sounding but entirely fabricated text on quiet/unclear
+  audio. Observed live twice: "thanks for watching, and i'll see you in the
+  next video" and "hey, hey, hey, mister..." from audio that wasn't real
+  intelligible speech. `_recognize_offline` now drops any segment with
+  `no_speech_prob >= 0.6` (Whisper's own estimate the segment isn't real
+  speech) before joining the transcript - verified directly against saved
+  debug captures from tonight's real use: a genuine hallucination-prone
+  segment (`no_speech_prob=0.72`, text "You") gets filtered, while a
+  confident real segment (`no_speech_prob=0.07`, "Breathe in a little
+  bit.") is kept. 0.6 is a conservative starting cutoff, not tuned against
+  a labeled dataset.
+
 ### Fixed (capture reliability - root-caused with real evidence, not a guess)
 - **Offline STT (faster-whisper) now also engages on `sr.UnknownValueError`,
   not just `sr.RequestError`.** Originally (2026-08-16) the offline fallback

@@ -176,24 +176,28 @@ def test_rename_refuses_to_overwrite_existing(sandbox):
 # ---------- list / search ----------
 
 def test_list_files_all_dirs(sandbox):
+    """Combining multiple folders must carry per-file location - a bare
+    filename with no folder context isn't actionable when several folders
+    are involved (see files.list_files's docstring)."""
     _touch(sandbox['desktop'] / 'a.txt')
     _touch(sandbox['documents'] / 'b.txt')
-    names, err = files.list_files()
+    entries, err = files.list_files()
     assert err is None
-    assert set(names) == {'a.txt', 'b.txt'}
+    assert {(e['name'], e['location']) for e in entries} == {
+        ('a.txt', 'Desktop'), ('b.txt', 'Documents')}
 
 
 def test_list_files_one_dir(sandbox):
     _touch(sandbox['desktop'] / 'a.txt')
     _touch(sandbox['documents'] / 'b.txt')
-    names, err = files.list_files('documents')
+    entries, err = files.list_files('documents')
     assert err is None
-    assert names == ['b.txt']
+    assert entries == [{'name': 'b.txt', 'location': 'Documents'}]
 
 
 def test_list_files_unknown_dir_returns_error(sandbox):
-    names, err = files.list_files('nonexistent_folder')
-    assert names == []
+    entries, err = files.list_files('nonexistent_folder')
+    assert entries == []
     assert err is not None
 
 

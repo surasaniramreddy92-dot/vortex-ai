@@ -97,8 +97,14 @@ def resolve_dir(name):
 
 
 def list_files(dir_name=None, limit=20):
-    """Returns (filenames, error_message). Lists one allowed directory by
-    spoken name, or all three combined if none is given."""
+    """Returns (entries, error_message). Lists one allowed directory by
+    spoken name, or all three combined if none is given. Each entry is
+    {'name': filename, 'location': the folder's spoken name (e.g.
+    'Desktop')} - not just a bare filename - so a caller combining multiple
+    folders can say *where* each file is instead of a location-less list a
+    listener has no way to act on (see main.py's h_list_files: this is
+    spoken, not displayed, so "report.pdf" alone doesn't tell you anything
+    you can do with it, but "report.pdf, in Desktop" does)."""
     if dir_name:
         d = resolve_dir(dir_name)
         if not d:
@@ -106,11 +112,13 @@ def list_files(dir_name=None, limit=20):
         dirs = [d]
     else:
         dirs = [Path(d) for d in SEARCH_DIRS]
-    names = []
+    entries = []
     for d in dirs:
         if d.is_dir():
-            names.extend(sorted(f.name for f in d.iterdir() if f.is_file()))
-    return names[:limit], None
+            for f in sorted(d.iterdir(), key=lambda p: p.name):
+                if f.is_file():
+                    entries.append({'name': f.name, 'location': d.name})
+    return entries[:limit], None
 
 
 def search_files(query, limit=20):
