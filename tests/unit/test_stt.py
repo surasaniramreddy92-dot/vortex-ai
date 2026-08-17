@@ -165,7 +165,8 @@ def test_get_offline_model_unavailable_degrades_gracefully(monkeypatch):
 
 def test_recognize_offline_joins_and_normalizes_segments():
     stt = make_stt()
-    seg1, seg2 = Mock(text=' Turn off '), Mock(text='the lights.')
+    seg1 = Mock(text=' Turn off ', no_speech_prob=0.1)
+    seg2 = Mock(text='the lights.', no_speech_prob=0.1)
     fake_model = Mock()
     fake_model.transcribe.return_value = ([seg1, seg2], Mock())
     stt._get_offline_model = lambda: fake_model
@@ -186,3 +187,35 @@ def test_recognize_offline_returns_none_when_model_unavailable():
     stt._get_offline_model = lambda: None
     audio = sr.AudioData(b'\x00\x01' * 8000, 16000, 2)
     assert stt._recognize_offline(audio) is None
+
+
+def test_recognize_offline_drops_high_no_speech_prob_segments():
+    """Regression test for a real live finding (2026-08-17): faster-whisper
+    can hallucinate fluent-sounding but entirely fabricated text on quiet/
+    unclear audio (observed live: "thanks for watching, and i'll see you in
+    the next video" from near-silent audio) - a known Whisper failure mode.
+    A segment with a high no_speech_prob (Whisper's own estimate the segment
+    isn't real speech) must be dropped rather than spoken as if the user
+    said it."""
+    stt = make_stt()
+    hallucinated = Mock(text='thanks for watching', no_speech_prob=0.95)
+    fake_model = Mock()
+    fake_model.transcribe.return_value = ([hallucinated], Mock())
+    stt._get_offline_model = lambda: fake_model
+
+    audio = sr.AudioData(b'\x00\x01' * 8000, 16000, 2)
+    assert stt._recognize_offline(audio) is None
+
+
+def test_recognize_offline_keeps_real_segments_drops_hallucinated_ones():
+    """A mix of one real, confident segment and one likely-hallucinated one
+    should keep only the real one, not discard or keep everything."""
+    stt = make_stt()
+    real = Mock(text='turn off the lights', no_speech_prob=0.05)
+    hallucinated = Mock(text='subscribe for more', no_speech_prob=0.9)
+    fake_model = Mock()
+    fake_model.transcribe.return_value = ([real, hallucinated], Mock())
+    stt._get_offline_model = lambda: fake_model
+
+    audio = sr.AudioData(b'\x00\x01' * 8000, 16000, 2)
+    assert stt._recognize_offline(audio) == 'turn off the lights'

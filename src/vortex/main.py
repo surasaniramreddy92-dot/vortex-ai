@@ -622,28 +622,40 @@ class Vortex:
         # existing YouTube-before-generic-search ordering already documents.
 
         def h_search_files(cmd, m):
+            # Speaks each match as "name, in Location" (the folder's spoken
+            # name - Desktop/Documents/Downloads), not a full path - the path
+            # itself is unspoken clutter (long, awkward to say, not
+            # actionable by ear), but which of the three folders a file is in
+            # genuinely is: it's what you'd need to go find it yourself.
             query = m.group(1).strip()
             matches = fileops.search_files(query)
             if not matches:
                 self.speak(f"I couldn't find any files matching {query}.")
                 return
-            names = ', '.join(p.name for p in matches[:5])
+            shown = ', '.join(f'{p.name}, in {p.parent.name}' for p in matches[:5])
             plural = 's' if len(matches) != 1 else ''
-            self.speak(f'I found {len(matches)} matching file{plural}: {names}.')
+            self.speak(f'I found {len(matches)} matching file{plural}: {shown}.')
 
         def h_list_files(cmd, m):
+            # Same "name, in Location" phrasing as h_search_files above, but
+            # only when multiple folders are being combined (dir_name is
+            # None) - if you asked for one specific folder, restating it for
+            # every file is redundant, you already said where to look.
             dir_name = m.group(1).strip() if m.group(1) else None
-            names, err = fileops.list_files(dir_name)
+            entries, err = fileops.list_files(dir_name)
             if err:
                 self.speak(err)
                 return
-            if not names:
+            if not entries:
                 self.speak('No files found.')
                 return
-            shown = ', '.join(names[:10])
-            more = ', and more.' if len(names) > 10 else '.'
-            plural = 's' if len(names) != 1 else ''
-            self.speak(f'Found {len(names)} file{plural}: {shown}{more}')
+            if dir_name:
+                shown = ', '.join(e['name'] for e in entries[:10])
+            else:
+                shown = ', '.join(f"{e['name']}, in {e['location']}" for e in entries[:10])
+            more = ', and more.' if len(entries) > 10 else '.'
+            plural = 's' if len(entries) != 1 else ''
+            self.speak(f'Found {len(entries)} file{plural}: {shown}{more}')
 
         def h_delete_file(cmd, m):
             name = m.group(1).strip()

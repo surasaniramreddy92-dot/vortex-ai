@@ -205,12 +205,24 @@ class SpeechToText:
         self._get_offline_model()
 
     def _recognize_offline(self, audio):
-        """Fallback transcription via faster-whisper - local, no network. Only
-        ever called from capture_command when recognize_google raised
-        sr.RequestError (Google unreachable), never sr.UnknownValueError
-        (Google was reached fine, the audio just wasn't clear enough to it -
-        falling back to a smaller, less accurate local model in that case
-        would be a downgrade, not a fallback)."""
+        """Fallback transcription via faster-whisper - local, no network.
+        Called from capture_command on both a real network failure and a
+        cloud UnknownValueError (see capture_command's docstring for the
+        2026-08-17 evidence behind trying it on both).
+
+        Filters segments by no_speech_prob (Whisper's own estimate that a
+        segment contains no real speech at all) before joining them - added
+        2026-08-17 after live evidence Whisper-family models can hallucinate
+        fluent-sounding but entirely fabricated text on quiet/unclear audio
+        (observed live: "thanks for watching, and i'll see you in the next
+        video" from audio that was mostly near-silence - a well-documented
+        Whisper failure mode, not a one-off). Without this filter, a
+        hallucinated segment would be indistinguishable from a real
+        transcription and get spoken to the LLM as if the user had actually
+        said it. 0.6 is a conservative cutoff (segments Whisper itself is
+        more likely than not to consider silence get dropped), not tuned
+        against a labeled dataset - a starting point, not a validated
+        threshold."""
         model = self._get_offline_model()
         if model is None:
             return None
@@ -220,7 +232,8 @@ class SpeechToText:
         samples = np.frombuffer(audio.get_raw_data(), dtype=np.int16).astype(np.float32) / 32768.0
         try:
             segments, _info = model.transcribe(samples, language='en')
-            text = ' '.join(seg.text for seg in segments).strip().lower()
+            kept = [seg.text for seg in segments if seg.no_speech_prob < 0.6]
+            text = ' '.join(kept).strip().lower()
             return text or None
         except Exception as e:
             self.log(f'Offline STT transcription error: {type(e).__name__}: {e}')
