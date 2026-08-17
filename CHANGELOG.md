@@ -8,6 +8,46 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-08-17
 
+### Fixed (post-wave-2 live testing)
+- **`WAKE_THRESHOLD`/`BARGE_IN_THRESHOLD` lowered from 0.65 to 0.60.** Direct
+  evidence, not a guess: ran the exact wake model + AGC pipeline in
+  isolation (bypassing the live app entirely) against a real captured "Hey
+  Vortex" utterance and got a max score of 0.6499 - a genuine attempt
+  landing a hair's-width under the old 0.65 bar. The live process scored
+  the same kind of attempt even lower still. Same accepted trade-off as
+  every previous threshold reduction: standby false-positives become more
+  likely, accepted because a wake word that doesn't wake is worse.
+- **Offline STT/TTS fallback models (faster-whisper/piper-tts) no longer
+  eagerly warm up at startup.** They were adding ~200MB of permanently-
+  resident memory (measured: 478MB with eager warm-up vs 249MB without) for
+  a fallback that exists for a network outage which hasn't actually
+  happened once in extensive testing. Live testing found the live process
+  scoring a real wake attempt much lower than the same audio scored in
+  isolation - real evidence of resource contention, and the offline
+  models' background thread pools (ctranslate2, onnxruntime, alongside
+  openWakeWord's own onnxruntime session, all on the same 4 physical
+  cores) are a plausible contributor now that they're permanently loaded.
+  Both engines still lazy-load correctly on first real use if a genuine
+  outage happens - this only removes the *eager* load at startup, trading
+  a few extra seconds on the first real fallback for a lighter, more
+  responsive process the rest of the time. Wake/barge-in responsiveness is
+  this project's constant, everyday priority; the fallback is not.
+- **Honest, unresolved finding from the same testing session:** even after
+  both fixes above, live synthetic acoustic re-testing (via the disposable
+  test scripts used throughout this project) still frequently failed to
+  register any wake score at all, despite direct verification that (a) raw
+  audio reaching the mic during these attempts was strong (max RMS 7069,
+  measured via a standalone probe bypassing VORTEX entirely) and (b) the
+  wake model scores this kind of audio correctly when run in isolation.
+  Ruled out: threshold value, offline-model memory/resource contention (the
+  fix above). Not yet root-caused: something specific to how the live,
+  long-running process (many hours, many restarts in one session)
+  interacts with repeated synthetic test playback specifically - real
+  human voice attempts during the same session did register correctly
+  (e.g. a live "Hey Vortex" scored 0.664 against the then-current 0.65
+  threshold). Flagged honestly rather than claimed fixed; needs a live
+  human-voice check to confirm the two fixes above actually helped.
+
 ### Added (wave 2 — three more phases, done in parallel and merged carefully)
 Three more independent tracks of previously-deferred work, again via
 isolated-worktree agents running in parallel (each touching a different
