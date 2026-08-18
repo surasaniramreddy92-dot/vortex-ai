@@ -297,6 +297,50 @@ barge-in, and general Q&A all still work correctly together.
   scheduled task, stopped after) with an adversarial near-duplicate-keyword
   test document.
 
+### Changed
+- **Resumed the modular refactor (`docs/REFACTOR_PLAN.md`), on hold since
+  Step 3: Steps 4 and 5, both tested and pushed same-day.**
+  - **Step 4 — LLM provider extraction.** `llm/provider.py` (abstract
+    `LLMProvider.chat_stream`) + `llm/ollama_provider.py` (concrete
+    `OllamaProvider`) now own the `ollama.chat` call and the queue/thread
+    token-polling pattern that used to live inline in `main.py` as
+    `_poll_stream`. `ask_llm_stream` and `_stream_llm_answer` (the
+    document/RAG answer path, not named in the original plan but sharing
+    the identical pattern) both now call `self.llm.chat_stream(messages)`;
+    all error-handling/fallback-text/memory-bookkeeping logic is untouched.
+    Verified live against real Ollama (real streamed reply, memory turn
+    persisted), not just the mocked test suite.
+  - **Step 5 — OS automation behind a platform adapter.** `platform/base.py`
+    (abstract `PlatformAdapter`) + `platform/windows/*.py` (the concrete
+    shutdown/restart/lock commands and the native-app/web-app/
+    protected-process tables) separate *what* VORTEX does from *how*
+    Windows does it; `tools/system/apps.py` and `tools/system/process.py`
+    hold the ported-verbatim capability logic. Pulled two real gaps forward
+    from their originally-planned later step instead of leaving them open:
+    `protected_processes` grew from 12 to 19 entries (added the
+    system-critical processes `CURRENT_STATE.md` §6 had flagged as
+    missing - `svchost.exe`, `wininit.exe`, `smss.exe`, `spoolsv.exe`,
+    `registry`, `fontdrvhost.exe`, `msmpeng.exe`), and
+    `handle_confirmation`'s `'yes' in cmd` substring bug (same §6) was
+    replaced with a real `_is_affirmative()` word-boundary check - a
+    misheard "no, not yes I don't want that" now correctly declines instead
+    of confirming a shutdown/restart/close-all/delete. `main.py`'s `psutil`
+    and `subprocess` imports came out entirely, now unused there. Verified
+    live: `_is_affirmative()` against the exact flagged bug phrase plus 9
+    others, and a real `Vortex()` opening/closing a real Notepad process
+    end-to-end. Shutdown/restart/close-all/lock deliberately not
+    live-triggered (disruptive to a running session) - verified by code
+    reading instead, since each is a verbatim port.
+  - Both steps: full `pytest` suite (167 tests) green after each, zero
+    regressions; `REFACTOR_PLAN.md` updated in the same commit as each step
+    with a "done" note documenting what actually landed and any judgment
+    calls made along the way, same convention Step 3 established.
+  - Steps 6-10 (capability registry/intent router, orchestrator, thin
+    bootstrap, test hardening, feature-parity checklist) remain - Step 6 in
+    particular needs updated scope, since `awaiting_confirmation` now also
+    covers `delete_file`/`move_file`/`rename_file`, not just the three
+    OS-automation actions the original plan named.
+
 ## 2026-08-16
 
 ### Added (seventh pass — refactor + document intelligence, done in parallel)
