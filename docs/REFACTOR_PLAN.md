@@ -2,16 +2,13 @@
 
 Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
 (target design). This is the *sequence* — what changes, in what order, and
-the exit criteria for each step. Steps 0-5 are done (see each step's own
+the exit criteria for each step. Steps 0-6 are done (see each step's own
 "done" note for what actually landed and any judgment calls made along the
 way); the refactor was on hold between Step 3 and Step 4 while capability
 work (offline STT/TTS fallback, file ops, hybrid RAG search, OCR document
 intelligence, screen reading, popups) shipped directly on top of `main.py`
-instead. Steps 6-10's mapping tables below still describe the codebase as it
-looked when this plan was written - Step 6 in particular will need to
-account for `awaiting_confirmation`/`handle_confirmation` now covering
-`delete_file`/`move_file`/`rename_file` too, not just the three OS-automation
-actions the original table names. Each step from here still waits for
+instead. Steps 7-10's mapping tables below still describe the codebase as it
+looked when this plan was written. Each step from here still waits for
 explicit sign-off before starting.
 
 **Hard rule for every step below:** run whatever tests exist, confirm no
@@ -239,7 +236,38 @@ behavior without touching real processes.
 
 ---
 
-## Step 6 — Introduce the capability registry + intent router
+## Step 6 — Introduce the capability registry + intent router (done, 2026-08-18)
+
+Landed as planned. `core/intent_router.py`'s `route(cmd)` is a genuinely
+pure function - 26 frozen Intent dataclasses (`name`/`destructive`/
+`description` as `ClassVar`s, so they don't affect equality), one per
+distinct capability the old 24-entry registry recognized plus `Unhandled`
+for the LLM-fallback case; every regex/literal pattern and their checking
+order is an unchanged, verbatim port. `core/capability_registry.py`'s
+`CapabilityRegistry(host).dispatch(intent)` is the deliberately-impure
+other half - every handler is a direct port of the old `h_*` closures,
+taking `host` (the `Vortex` instance) explicitly instead of closing over
+`self`; it asserts full dispatch coverage at construction time so an
+Intent type without a wired handler fails immediately, not silently at
+first use. `core/policy_engine.py` got `is_affirmative()` moved into it
+unchanged, completing the move Step 5's done-note promised - a fully
+general "does this Intent require confirmation" policy engine (Phase 15 of
+the master roadmap) was **not** built, since `CURRENT_STATE.md` §6 already
+judged the existing per-branch `awaiting_confirmation` pattern fine at this
+scale and nothing in this step's actual scope changes that judgment.
+`main.py`'s `_build_registry` (297 lines) is gone entirely; `re` and the
+last remaining `psutil`/`subprocess` references went with it. Three
+`test_registry.py` tests that inspected the old list-of-dicts `_registry`
+directly were replaced with equivalents against the new structures - every
+other test in that file, and every test in `test_file_confirmation.py`,
+needed zero changes, since `execute()`'s external behavior is
+byte-identical. Verified: full `pytest` suite (214 tests, 47 new) green;
+live - a real `Vortex()` opening/closing a real Notepad process through
+`execute()` end-to-end (not just the direct method calls Step 5 tested), a
+real time query, and the exact flagged confirmation-bug scenario ("close
+all" → "no, not yes I don't want that" → correctly cancelled).
+
+## Step 6 (original plan, preserved below for reference) — Introduce the capability registry + intent router
 
 **Goal:** split `execute()`'s fused "classify + run" regex chain into two
 things: something that maps recognized text to a named capability (pure,
