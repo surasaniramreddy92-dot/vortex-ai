@@ -2,13 +2,14 @@
 
 Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
 (target design). This is the *sequence* — what changes, in what order, and
-the exit criteria for each step. Steps 0-7 are done (see each step's own
+the exit criteria for each step. Steps 0-8 are done (see each step's own
 "done" note for what actually landed and any judgment calls made along the
 way); the refactor was on hold between Step 3 and Step 4 while capability
 work (offline STT/TTS fallback, file ops, hybrid RAG search, OCR document
 intelligence, screen reading, popups) shipped directly on top of `main.py`
-instead. Steps 8-10's mapping tables below still describe the codebase as it
-looked when this plan was written. Each step from here still waits for
+(now `app.py`, per Step 8) instead. Steps 9-10's mapping/scope below still
+describe the codebase as it looked when this plan was written. Each step
+from here still waits for
 explicit sign-off before starting.
 
 **Hard rule for every step below:** run whatever tests exist, confirm no
@@ -333,22 +334,28 @@ regression pass against the "preserve these" list.
 
 ---
 
-## Step 8 — `main.py` becomes the thin bootstrap
+## Step 8 — `main.py` becomes the thin bootstrap (done, 2026-08-18)
 
-**Goal:** finally reduce `main.py` to what you specified:
-
-```python
-from vortex.app import VortexApplication
-
-def main():
-    app = VortexApplication()
-    app.start()
-
-if __name__ == "__main__":
-    main()
-```
-
-Only happens once Steps 1-7 have made this trivially true — not before.
+Landed as planned, with one deliberate naming deviation from the plan's own
+illustrative snippet: the class stayed named `Vortex`, not renamed to
+`VortexApplication`. A rename would have touched every test file's import
+for zero functional benefit - the actual substance of this step is
+`main.py` shrinking to the bootstrap, which it now does exactly as shown
+above (just `from .app import Vortex` instead of `VortexApplication`).
+`src/vortex/app.py` is what used to be `main.py`'s entire contents, moved
+verbatim - by the time this step started, Steps 1-7 genuinely had made this
+trivially true, exactly as this step predicted: nothing left in the class
+needed further extraction, it was already composition plus a modest amount
+of genuinely-app-level orchestration (document Q&A, file-op execution)
+that doesn't belong in any single-purpose module built in earlier steps.
+Doing the move precisely (not just copy-pasting) surfaced two real,
+pre-existing staleness bugs: `screen`/`popup` imports that had been dead
+since Step 6 moved their only call sites into
+`core/capability_registry.py`, and half a dozen docstrings elsewhere in the
+codebase that described current wiring as living "in main.py" (now
+`app.py`) - both fixed alongside the move. Verified: full `pytest` suite
+(221 tests) green; confirmed both `from vortex.app import Vortex` and
+`python -m src.vortex.main` construct/run identically.
 
 ---
 
