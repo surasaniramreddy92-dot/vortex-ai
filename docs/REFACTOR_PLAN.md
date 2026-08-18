@@ -2,12 +2,12 @@
 
 Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
 (target design). This is the *sequence* — what changes, in what order, and
-the exit criteria for each step. Steps 0-6 are done (see each step's own
+the exit criteria for each step. Steps 0-7 are done (see each step's own
 "done" note for what actually landed and any judgment calls made along the
 way); the refactor was on hold between Step 3 and Step 4 while capability
 work (offline STT/TTS fallback, file ops, hybrid RAG search, OCR document
 intelligence, screen reading, popups) shipped directly on top of `main.py`
-instead. Steps 7-10's mapping tables below still describe the codebase as it
+instead. Steps 8-10's mapping tables below still describe the codebase as it
 looked when this plan was written. Each step from here still waits for
 explicit sign-off before starting.
 
@@ -287,7 +287,38 @@ policy engine requires and correctly parses yes/no without the substring bug.
 
 ---
 
-## Step 7 — Orchestrator + state manager
+## Step 7 — Orchestrator + state manager (done, 2026-08-18)
+
+Landed with one deliberate, documented scope narrowing: `_worker`/
+`_active_session` were **not** touched again - by the time this step
+started they were already one-line delegates to `voice/session.py`'s
+`Session.worker()`/`.active_session()` (Step 3 had already built the thing
+that "wires voice events → intent router → capability registry → response"
+in substance, just under a different name/location than this step
+originally envisioned). Retrofitting that logic through a formal
+`STANDBY`/`ACTIVE_SESSION`/`SPEAKING` enum *as the actual source of truth*
+was judged not worth the risk: `Session`'s Events were extracted and
+live-debugged against real barge-in latency regressions (see its own
+docstring, `CHANGELOG.md` 2026-08-16), and a purely cosmetic "enum instead
+of Events" swap on the most timing-sensitive code in the whole app risked
+reintroducing exactly that class of bug for no behavioral gain. Instead,
+`core/state_manager.py`'s `VortexState` enum + `current_state()` is a
+read-only, computed-fresh-every-call *view* over the same Events, exposed
+as `Vortex.state` - explicit and testable, without becoming a second source
+of truth that could drift from the real one. One small, genuinely missing
+piece of state needed adding for `ACTIVE_SESSION` to be accurate at all:
+`Session.in_active_session` (a `threading.Event`, set/cleared around the
+*outside* of `active_session()`'s loop, touching none of the timing-critical
+logic inside it). `core/orchestrator.py` took the literal lifecycle
+methods (`start`/`stop`/`shutdown`/`tray_*`) verbatim, exactly matching the
+step's "what `start()` shrinks down to" goal. Verified: full `pytest` suite
+(221 tests, 7 new) green; live - all three `VortexState` transitions
+checked against real `BargeIn`/`Session` objects. `start()`/`run()` itself
+was not live-invoked (opens a real mic stream, a visible tray icon, blocks
+the process) - covered instead by the existing real-thread worker-dispatch
+test, unaffected by this change.
+
+## Step 7 (original plan, preserved below for reference) — Orchestrator + state manager
 
 **Goal:** replace the implicit state (which thread holds which flag) with an
 explicit `state_manager.py` (an enum: `STANDBY`, `ACTIVE_SESSION`,
