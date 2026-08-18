@@ -72,9 +72,15 @@ Prerequisites:
 ```powershell
 python -m venv venv
 venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -e ".[all,voice-offline,dev]"
+python -m playwright install chromium
 python -m src.vortex.main
 ```
+
+(`requirements.txt` still exists but is superseded by `pyproject.toml`'s
+dependency groups — see its own header comment. `all` covers every runtime
+extra; drop `voice-offline`/`dev` if you don't need the offline STT/TTS
+fallback or the test/lint tooling.)
 
 ### Setting up the RAG stack (PostgreSQL + Qdrant)
 
@@ -115,36 +121,53 @@ While VORTEX is talking, saying "Hey Vortex" again cuts it off mid-sentence
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `VORTEX_HOME` | `~/.vortex` | where logs/data/memory live. Set this to point at an existing install's directory to preserve continuity rather than starting fresh |
 | `VORTEX_VOICE` | `en-US-AvaMultilingualNeural` | edge-tts voice |
 | `USER_NAME` | `Boss` | how VORTEX addresses you |
-| `VORTEX_WAKE_WORD` | `tools/wakeword/models/hey_vortex.onnx` | path to the wake model |
-| `VORTEX_WAKE_THRESHOLD` | `0.8` | score needed to wake from standby |
-| `VORTEX_BARGE_IN_THRESHOLD` | `0.9` | stricter score needed to interrupt VORTEX's own speech (the mic also hears the speakers) |
+| `VORTEX_WAKE_WORD` | `tools/wakeword/models/hey_vortex.onnx`, resolved relative to the repo checkout (not `VORTEX_HOME` — it's a committed asset, not user data) | path to the wake model |
+| `VORTEX_WAKE_THRESHOLD` | `0.60` | score needed to wake from standby |
+| `VORTEX_BARGE_IN_THRESHOLD` | `0.60` | score needed to interrupt VORTEX's own speech — deliberately *not* stricter than the wake threshold (barge-in is inherently harder to score high on, since the mic also hears VORTEX's own speakers) |
 | `VORTEX_AGC_TARGET_RMS` / `VORTEX_AGC_MAX_GAIN` / `VORTEX_AGC_NOISE_MARGIN` | `3500` / `4.0` / `1.6` | automatic gain control on the wake audio path: boosts speech-level audio toward the target RMS, but only for frames that stand out `NOISE_MARGIN`x above a tracked ambient noise floor, so steady background noise doesn't get amplified into a false wake trigger |
 | `VORTEX_SESSION_TIMEOUT` | `18` | seconds of silence before an active session returns to standby |
-| `VORTEX_MEMORY_DB` | `data/vortex_memory.db` | SQLite database conversation history persists to |
+| `VORTEX_MEMORY_DB` | `<VORTEX_HOME>/data/vortex_memory.db` | SQLite database conversation history persists to |
 | `VORTEX_POSTGRES_DSN` | `dbname=vortex user=vortex password=... host=localhost` | Postgres connection string for document/chunk metadata (RAG) |
 | `VORTEX_QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint for vector search (RAG) |
 | `VORTEX_EMBED_MODEL` | `nomic-embed-text` | local Ollama embedding model used to vectorize document chunks and questions |
+| `VORTEX_OFFLINE_FALLBACK_ENABLED` | `true` | kill switch for the offline STT (`faster-whisper`)/TTS (`piper-tts`) fallback, engaged only on a real network-reachability failure |
+| `VORTEX_OCR_ENABLED` | `true` | OCR fallback for scanned PDF pages and `read my screen` (needs the separate Tesseract binary on PATH) |
+| `VORTEX_AUDIT_LOG` | `<VORTEX_HOME>/logs/audit.jsonl` | structured JSON-lines record of consequential actions (file delete/move, app close, shutdown/restart, confirmation prompts and their outcomes) |
 
 ## Architecture today
 
 ```
 Microphone
-  -> sounddevice InputStream (1280-sample frames, always-on)
-       -> AGC -> openWakeWord (custom "Hey Vortex" ONNX model)
+  -> voice/wake.py: sounddevice InputStream (1280-sample frames, always-on)
+       -> voice/audio.py AGC -> openWakeWord (custom "Hey Vortex" ONNX model)
             -> score >= threshold? -> wake/barge-in event
-  -> worker thread: "Yes Boss?" -> SpeechRecognition (Google Web Speech)
-       -> regex router: deterministic command? -> execute directly
-                          |                        (apps/processes, browser via
-                          |                         Playwright, documents via
-                          |                         PyMuPDF/python-docx/openpyxl,
-                          |                         RAG-backed Q&A via Postgres+Qdrant)
-                          otherwise -> Ollama (llama3.2:1b, streamed)
-  -> response text -> sentence-chunked -> edge-tts -> pygame playback
+  -> voice/session.py worker thread: "Yes Boss?"
+       -> voice/stt.py: Google Web Speech, falling back to faster-whisper
+          (offline) on a real network failure
+       -> core/intent_router.py: pure text -> Intent (26 types, no side effects)
+            -> Intent matched? -> core/capability_registry.py dispatches to:
+                 tools/system/* (apps/processes) + platform/windows/* (the how)
+                 browser.py (Playwright)
+                 documents.py (PyMuPDF/python-docx/openpyxl, OCR fallback)
+                 files.py (list/search/move/copy/rename/delete)
+                 screen.py (screenshot + OCR)
+                 rag.py (RAG-backed document Q&A via Postgres+Qdrant)
+            -> Unhandled -> llm/ollama_provider.py (llama3.2:1b, streamed)
+  -> voice/tts.py: response text -> sentence-chunked -> edge-tts (falling
+       back to piper-tts offline on a network failure) -> pygame playback
        (each chunk synthesized ahead of playback; stop_speaking event
         can cut it off between chunks or mid-chunk)
   -> conversation turns persisted to SQLite (survives restarts)
+  -> consequential actions also logged to audit.py's JSON-lines trail
+
+core/orchestrator.py owns the process lifecycle around all of this (tray
+icon, worker thread spawn, clean teardown); core/state_manager.py exposes
+the current STANDBY/ACTIVE_SESSION/SPEAKING state as a read-only view over
+the same events, for anything that wants to ask "what is VORTEX doing
+right now" without re-deriving it.
 
 Document Q&A specifically:
   file -> extract_text() -> chunk (800 chars, 100 overlap)
@@ -155,18 +178,35 @@ Document Q&A specifically:
            -> only the relevant chunks -> Ollama (streamed) -> spoken answer
 ```
 
-The orchestration/voice/OS-automation logic still lives in
-[src/vortex/main.py](src/vortex/main.py) as one class — see
-[IMPLEMENTED.md](IMPLEMENTED.md) Phase 0 for why that's the biggest
-near-term debt, and [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md) for the
-planned (not yet started) modularization. The newer capabilities are at
-least already separate, composed modules rather than more methods on the
-same class:
+**The modular refactor described in [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md)
+is complete (all 11 steps, 0-10)** — `main.py` is now a 15-line bootstrap
+(`from .app import Vortex; Vortex().start()`); every piece of the former
+god-object lives in its own module:
 
+- [src/vortex/app.py](src/vortex/app.py) — the `Vortex` class: composition root, document/RAG orchestration, file-op execution
+- [src/vortex/config.py](src/vortex/config.py) — typed, testable config (`VortexConfig`), one env var per field
+- [src/vortex/voice/](src/vortex/voice/) — wake detection (`wake.py`), STT (`stt.py`, cloud + offline fallback), TTS (`tts.py`, cloud + offline fallback), AGC (`audio.py`), barge-in signaling (`barge_in.py`), the active-session/worker event loop (`session.py`)
+- [src/vortex/llm/](src/vortex/llm/) — `LLMProvider` interface (`provider.py`) + the concrete Ollama implementation (`ollama_provider.py`)
+- [src/vortex/platform/](src/vortex/platform/) — `PlatformAdapter` interface (`base.py`) + the Windows implementation (`windows/power.py`, plus its app-table and protected-process data files) — the seam a future Linux/macOS adapter would plug into
+- [src/vortex/tools/system/](src/vortex/tools/system/) — OS-automation capability logic (open/close apps, bulk-close), consuming the platform-specific tables above
+- [src/vortex/core/](src/vortex/core/) — `intent_router.py` (pure text→Intent classification, 26 Intent types), `capability_registry.py` (dispatch), `policy_engine.py` (yes/no confirmation parsing), `orchestrator.py` (process lifecycle: tray icon, worker thread, teardown), `state_manager.py` (explicit `VortexState` enum)
 - [src/vortex/memory.py](src/vortex/memory.py) — SQLite-backed conversation history
-- [src/vortex/documents.py](src/vortex/documents.py) — PDF/DOCX/XLSX/text reading
+- [src/vortex/documents.py](src/vortex/documents.py) — PDF/DOCX/XLSX/text reading, with OCR fallback for scanned PDFs
 - [src/vortex/browser.py](src/vortex/browser.py) — Playwright-driven navigation/search/click
-- [src/vortex/rag.py](src/vortex/rag.py) — chunking/embedding/Postgres+Qdrant retrieval for document Q&A
+- [src/vortex/rag.py](src/vortex/rag.py) — chunking/embedding/Postgres+Qdrant hybrid retrieval for document Q&A
+- [src/vortex/files.py](src/vortex/files.py) — voice-triggered list/search/move/copy/rename/delete, scoped to Desktop/Documents/Downloads
+- [src/vortex/screen.py](src/vortex/screen.py) — screenshot + OCR ("read my screen")
+- [src/vortex/popup.py](src/vortex/popup.py) — synchronized visual file-listing window
+- [src/vortex/audit.py](src/vortex/audit.py) — structured JSON-lines audit trail for consequential actions
+
+`tests/unit/` (228 tests) and `tests/integration/` (real intent router →
+real capability registry → real tools/system, faking only the genuinely
+dangerous or environment-dependent boundaries) run in CI
+([.github/workflows/ci.yml](.github/workflows/ci.yml)) on every push —
+lint (`ruff`), type-check (`mypy`), then the full suite, excluding anything
+marked `hardware` (needs a real mic/Ollama/GUI process — those get their
+own manually-triggered workflow,
+[.github/workflows/hardware.yml](.github/workflows/hardware.yml)).
 
 ## The wake-word training pipeline
 
@@ -212,4 +252,7 @@ instead of only synthetic ones.
   would mean bypassing an anti-abuse mechanism.
 - Browser automation is navigate/search/click/read-page only — no form
   filling, uploads, downloads, or authenticated multi-page workflows yet.
-- No tests, no CI, no lint/type-check gate yet (Phase 0 debt).
+- Wake-word/AGC/barge-in timing and the offline STT/TTS fallback's actual
+  trigger condition both need real microphone/speaker hardware to verify —
+  covered by historical live acoustic testing (see `CHANGELOG.md`) rather
+  than CI, which runs on a headless runner with no audio device.

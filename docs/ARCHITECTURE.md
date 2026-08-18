@@ -1,9 +1,13 @@
 # VORTEX — Target Architecture
 
-This describes where the codebase is heading, per `docs/REFACTOR_PLAN.md`.
-It is a design document, not a status report — nothing described here as
-"target" exists yet unless explicitly marked (today). For what's actually
-built, see `docs/CURRENT_STATE.md` / `IMPLEMENTED.md`.
+This described where the codebase was heading, per `docs/REFACTOR_PLAN.md`.
+**As of 2026-08-18, that refactor is done (all 11 steps, 0-10)** — nearly
+everything below marked "CREATE NOW" actually exists now, not as a target.
+The module layout in §2 is annotated to say which; §1's principle and §3's
+design patterns describe the shipped architecture accurately as written.
+For a narrative status report (not a design doc), see `IMPLEMENTED.md`;
+for the step-by-step history of how each piece landed and the judgment
+calls made along the way, see `docs/REFACTOR_PLAN.md`.
 
 ## 1. Core principle
 
@@ -32,77 +36,91 @@ Verification
 Response
 ```
 
-## 2. Target module layout
+## 2. Module layout — built vs. still deferred
 
-Only modules with a concrete near-term purpose are listed as "create now."
-Everything else is a documented extension point — the interface that makes
-adding it later additive, not a rewrite — created only when the phase that
-needs it actually starts (per rule: architecture quality over technology
-count; no empty directories for appearance).
+Everything not marked **BUILT** is a documented extension point — the
+interface that makes adding it later additive, not a rewrite — created
+only when the phase that needs it actually starts (per rule: architecture
+quality over technology count; no empty directories for appearance).
 
 ```
 src/vortex/
 ├── __init__.py
-├── app.py                  # CREATE NOW (Step 7-8) - VortexApplication: builds & wires everything
-├── main.py                 # SHRINKS (Step 8) - thin bootstrap only
+├── app.py                  # BUILT (Step 8) - the Vortex class: builds & wires everything
+├── main.py                 # BUILT (Step 8) - thin bootstrap only, 15 lines
 │
-├── core/                   # CREATE NOW (Steps 6-7)
-│   ├── orchestrator.py     #   wires voice events -> router -> registry -> policy -> response
-│   ├── intent_router.py    #   text -> Intent (pure, no side effects)
-│   ├── capability_registry.py  # Intent -> capability dispatch
-│   ├── state_manager.py    #   explicit STANDBY/ACTIVE_SESSION/SPEAKING state
-│   ├── policy_engine.py    #   confirmation/approval rules for consequential intents
-│   └── events.py           #   the event types passed between the pieces above
+├── core/                   # BUILT (Steps 6-7)
+│   ├── orchestrator.py     #   BUILT - process lifecycle (tray icon, worker thread, teardown);
+│   │                       #   the voice-events->router->registry->response wiring this was
+│   │                       #   originally meant to own turned out to already live correctly
+│   │                       #   split across voice/session.py (Step 3) and app.py's execute()
+│   │                       #   (Step 6) - see REFACTOR_PLAN.md Step 7's done-note
+│   ├── intent_router.py    #   BUILT - text -> Intent (pure, no side effects), 26 Intent types
+│   ├── capability_registry.py  # BUILT - Intent -> capability dispatch
+│   ├── state_manager.py    #   BUILT - explicit VortexState enum (STANDBY/ACTIVE_SESSION/
+│   │                       #   SPEAKING), a read-only view over voice/'s existing Events,
+│   │                       #   not a new source of truth (see Step 7's done-note for why)
+│   ├── policy_engine.py    #   BUILT - is_affirmative() yes/no classification. A fully
+│   │                       #   general confirmation-policy engine was NOT built - deliberately
+│   │                       #   out of scope, see §3 below
+│   └── events.py           #   NOT BUILT - events between pieces are plain strings/queue
+│                            #   items; a formal Event-type module was never needed in practice
 │
-├── voice/                  # CREATE NOW (Step 3)
+├── voice/                  # BUILT (Step 3)
 │   ├── audio.py            #   AGC, noise-floor tracking, raw stream handling
 │   ├── wake.py             #   wake-model loading/inference/threshold logic
-│   ├── stt.py              #   SpeechToText interface + Google Web Speech adapter
-│   ├── tts.py              #   TextToSpeech interface + edge-tts adapter, chunking, playback
+│   ├── stt.py              #   SpeechToText, Google Web Speech + faster-whisper offline fallback
+│   ├── tts.py              #   TextToSpeech, edge-tts + piper-tts offline fallback, chunking, playback
 │   ├── barge_in.py         #   shared cancellation-token object
-│   └── session.py          #   active-session/inactivity-timeout loop
+│   └── session.py          #   active-session/inactivity-timeout loop, the worker event loop
 │   └── vad.py              # DEFERRED - no VAD model in use yet; wake score is the de facto gate today
 │
-├── llm/                    # CREATE NOW (Step 4)
+├── llm/                    # BUILT (Step 4)
 │   ├── provider.py         #   abstract LLMProvider.chat_stream(...)
 │   ├── ollama_provider.py  #   concrete Ollama implementation
-│   └── prompts.py          #   system prompt(s) as data, not inline strings
+│   └── prompts.py          #   NOT BUILT - SYSTEM_PROMPT already lived in config.py since Step
+│                            #   2, so a second home for the same string was skipped as redundant
 │   └── models.py           # DEFERRED - no structured tool-call schemas yet (Phase 4 full scope)
 │
-├── tools/                  # CREATE NOW (Step 5), capability logic only
+├── tools/                  # BUILT (Step 5), capability logic only
 │   └── system/
 │       ├── apps.py         #   open/close-app logic (OS-agnostic)
 │       └── process.py      #   bulk-close / allowlist logic (OS-agnostic)
-│   ├── browser/            # DEFERRED - Phase 3, no code yet
-│   ├── filesystem/         # DEFERRED - no file-operation capability yet
+│   ├── browser/            # DEFERRED - browser.py exists as a flat sibling module (Phase 3,
+│   │                       #   predates this refactor); folding it under tools/ not done
+│   ├── filesystem/         # DEFERRED - files.py exists as a flat sibling module, same reason
 │   └── developer/          # DEFERRED - Phase 14, no code yet
 │
-├── platform/               # CREATE NOW (Step 5), Windows only for now
-│   ├── base.py             #   PlatformAdapter abstract interface
+├── platform/               # BUILT (Step 5), Windows only for now
+│   ├── base.py             #   PlatformAdapter abstract interface (shutdown/restart/lock)
 │   └── windows/
 │       ├── apps.py         #   the .exe name table
-│       ├── protected_processes.py  # the process-kill allowlist, reviewed/expanded
-│       └── power.py        #   shutdown/restart command strings
+│       ├── protected_processes.py  # the process-kill denylist, expanded 12->19 entries
+│       └── power.py        #   the concrete WindowsPlatformAdapter
 │   ├── linux/               # DEFERRED - not created until Linux is actually targeted
 │   ├── macos/                # DEFERRED - same
 │   └── mobile/                # DEFERRED - same; mobile is a client, not a platform adapter (see §5)
 │
-├── config.py                # CREATE NOW (Step 1) - typed VortexConfig
+├── config.py                # BUILT (Step 1) - typed VortexConfig
 │
-├── memory/                  # PARTIALLY SUPERSEDED - src/vortex/memory.py (SQLite
+├── memory/                  # STILL FLAT, NOT FOLDED - src/vortex/memory.py (SQLite
 │                             #   conversation history) and src/vortex/rag.py
 │                             #   (Postgres+Qdrant document retrieval) both exist
-│                             #   today as flat sibling modules, ahead of this
-│                             #   refactor. Folding them into memory/repository.py
-│                             #   and memory/retrieval/ is mechanical once Steps
-│                             #   1-5 actually happen - not done yet by choice
-│                             #   (refactor is still on hold, see REFACTOR_PLAN.md)
+│                             #   today as flat sibling modules. Folding them into
+│                             #   memory/repository.py and memory/retrieval/ was never
+│                             #   part of REFACTOR_PLAN.md's actual 11 steps (0-10) -
+│                             #   it stayed a documented future option, not something
+│                             #   any landed step's exit criteria required
 ├── agents/                  # DEFERRED - Phase 13, single orchestrator is sufficient at this scale
 ├── workflows/               # DEFERRED - Phase 10, nothing durable-workflow-shaped exists yet
 ├── api/                     # DEFERRED - Phase 9, no HTTP/WebSocket surface yet
 ├── security/                 # DEFERRED - policy_engine.py (core/) covers today's actual need
-└── observability/           # CREATE NOW (Step 2), logging setup only - tracing/metrics deferred
-    └── logging.py
+└── observability/           # NOT BUILT - logging.basicConfig(...) is still one inline line
+    └── logging.py           #   in app.py, not its own module. Step 2's own exit criteria
+                              #   called for this move and it never happened - the smallest
+                              #   genuine leftover gap in the whole refactor, caught while
+                              #   writing this note, not fixed here (see REFACTOR_PLAN.md
+                              #   Step 2's note)
 ```
 
 ## 3. Design patterns actually in play
@@ -148,7 +166,6 @@ Per your rule 18 (don't add infrastructure until the phase that needs it):
 | Not built now | Needed starting at | Why it can wait |
 |---|---|---|
 | FastAPI/WebSocket API layer | Phase 9 | Nothing outside this process needs to talk to VORTEX yet. `core/orchestrator.py`'s design is what makes adding this additive later. |
-| PostgreSQL / Qdrant / RAG | Phase 5 | Conversation history is genuinely fine as an in-RAM list at current scope; no document/knowledge corpus exists to retrieve from yet. |
 | Redis / Kafka | Phase 9-10 | No multi-process/multi-service deployment exists yet — there's nothing to cache or stream between. |
 | Temporal | Phase 10 | No multi-step workflow exists yet that needs to survive a crash mid-execution. |
 | Multi-agent orchestration (LangGraph etc.) | Phase 13 | One orchestrator handling one conversation at a time is sufficient; a supervisor/specialist split solves a coordination problem that doesn't exist yet. |
@@ -195,12 +212,13 @@ native automation layer; a future PWA or native app talking to the FastAPI
 layer is the only planned iOS story.
 
 **Today**, none of this exists — the honest current answer is "Windows
-desktop only" (see `CURRENT_STATE.md` §7). This section documents the
-target so the refactor's module boundaries (Steps 1-8) are drawn in the
-right place to make this additive later instead of requiring another
-rewrite.
+desktop only" (see `CURRENT_STATE.md` §7). This section still documents a
+genuine future target, not something built - the completed refactor
+(Steps 0-10) drew the module boundaries (`core/orchestrator.py`,
+`platform/`) in the right place to make this additive later, which is as
+far as it goes today.
 
-## 6. Testing architecture (target)
+## 6. Testing architecture (built, Step 9)
 
 ```
 tests/
@@ -211,10 +229,15 @@ tests/
 ├── e2e/              # DEFERRED until there's something worth running e2e
 │                     # against beyond "the whole voice loop," which today
 │                     # is still verified manually per REFACTOR_PLAN.md Step 10.
-└── fixtures/         # shared fake adapters/providers for the above.
+└── fixtures/         # EXISTS, still empty - each test file defines its own
+                      # fakes inline (FakePlatformAdapter, FakeBrowser) rather
+                      # than sharing them from here; nothing has needed a
+                      # second copy of the same fake yet to justify the move.
 ```
 
 CI (`.github/workflows/ci.yml`, Step 9) runs `unit` + `integration` on every
-push. Anything marked `@pytest.mark.hardware` (real mic, real Ollama) is
-excluded from that gate and only run manually/locally — consistent with
-"CI must not require microphone, GUI, Ollama, or Windows desktop."
+push. Anything marked `@pytest.mark.hardware` (real mic, real Ollama, or a
+real Windows GUI process) is excluded from that gate and only runs via a
+separate, manually-triggered workflow
+(`.github/workflows/hardware.yml`) — consistent with "CI must not require
+microphone, GUI, Ollama, or Windows desktop."

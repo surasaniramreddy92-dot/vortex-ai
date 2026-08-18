@@ -120,7 +120,7 @@ class VortexConfig:
     # likely - accepted because a wake word that doesn't wake is a worse
     # failure mode than an occasional unwanted activation.
     wake_threshold: float = field(default_factory=lambda: _float_env('VORTEX_WAKE_THRESHOLD', 0.60))
-    # Kept equal to wake_threshold, not independently set - main.py's own comment
+    # Kept equal to wake_threshold, not independently set - app.py's own comment
     # on BARGE_IN_THRESHOLD documents this as deliberate ("NOT stricter than
     # WAKE_THRESHOLD, on purpose"): an earlier attempt at a *higher* bar for
     # barge-in broke real interruptions, since barge-in is inherently harder to
