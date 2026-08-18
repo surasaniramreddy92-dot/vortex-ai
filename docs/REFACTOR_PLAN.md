@@ -2,15 +2,18 @@
 
 Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
 (target design). This is the *sequence* — what changes, in what order, and
-the exit criteria for each step. Steps 0-8 are done (see each step's own
-"done" note for what actually landed and any judgment calls made along the
-way); the refactor was on hold between Step 3 and Step 4 while capability
-work (offline STT/TTS fallback, file ops, hybrid RAG search, OCR document
-intelligence, screen reading, popups) shipped directly on top of `main.py`
-(now `app.py`, per Step 8) instead. Steps 9-10's mapping/scope below still
-describe the codebase as it looked when this plan was written. Each step
-from here still waits for
-explicit sign-off before starting.
+the exit criteria for each step. **All of Steps 0-10 are done** (see each
+step's own "done" note for what actually landed and any judgment calls
+made along the way) - the modular refactor this document set out to plan
+is complete. The refactor was on hold between Step 3 and Step 4 while
+capability work (offline STT/TTS fallback, file ops, hybrid RAG search,
+OCR document intelligence, screen reading, popups) shipped directly on top
+of `main.py` (now `app.py`, per Step 8) instead; every step from 4 onward
+accounted for that work rather than following its original, now-stale
+mapping tables verbatim. What's next belongs to `docs/CURRENT_STATE.md`'s
+still-open items (§6's remaining security gaps, mobile/API layer per
+"What's deliberately deferred" below) and to growing actual capability, not
+to this document.
 
 **Hard rule for every step below:** run whatever tests exist, confirm no
 regression in the "preserve these" feature list, report exactly which files
@@ -373,13 +376,45 @@ adds:
 - `pytest` markers (`@pytest.mark.hardware`) on anything that does need real
   audio/Ollama, so CI can skip them by default.
 
-## Step 10 — Feature-parity verification against the original
+## Step 10 — Feature-parity verification against the original (done, 2026-08-18)
 
-A checklist run-through of every item in your "preserve current working
-features" list, confirmed working end-to-end on the refactored code, before
-this is considered done. Only after this passes does
-`legacy/main_working_baseline.py` stop being load-bearing (it can stay in
-the repo as a historical reference either way — no reason to delete it).
+Checklist run-through against `docs/CURRENT_STATE.md` §2's original feature
+table (audited 2026-08-02, before any refactor work) plus everything
+`CHANGELOG.md` records as added since. For each area: whether it's covered
+by an automated test today, and whether it was additionally live-verified
+in this session (real Ollama, real Playwright, real Postgres/Qdrant, real
+Tesseract where installed) rather than only through mocks.
+
+| Feature | Automated coverage | Live-verified this session |
+|---|---|---|
+| Wake-word listening, AGC, barge-in timing | `test_barge_in.py` (mocked audio/synthesis) | **No** - needs a real microphone/speaker loop, can't be simulated from this session. Unchanged since Step 3's own live acoustic verification (sub-100ms interrupt timing, documented in that step's done-note); Steps 4-9 never touched `voice/wake.py`, `voice/audio.py`, or the AGC math, so there's no plausible regression path |
+| Multi-turn active session + timeout | `test_barge_in.py`, `test_state_manager.py` | Indirectly - `Session.in_active_session` transitions checked live in Step 7 |
+| Confirmation flow (`'yes'`/`'no'` classification) | `test_confirmation.py`, `test_registry.py`, `test_file_confirmation.py` | **Yes** - the exact flagged bug phrase, end-to-end through `execute()`, in the Step 9 integration tests |
+| LLM integration (Ollama, streamed) | mocked via `ask_llm_stream` overrides in most tests | **Yes** - real `ask_llm_stream` against real Ollama (Step 4), real document summarization, real RAG-backed Q&A (this step) |
+| Deterministic intent routing | `test_intent_routing.py` (26 Intent types) | **Yes** - real `route()` calls throughout this session |
+| App launching (native + web fallback) | `test_registry.py`, integration tests | **Yes** - real Notepad opened/closed twice (Steps 5, 6, and the hardware-marked integration test) |
+| App termination (single + bulk) | `test_registry.py`, integration tests | **Yes** - real Notepad closed; close-all's real filtering logic verified against fake processes (never against real ones - see this step's own safety note in the Step 9 commit) |
+| Shutdown/restart/lock w/ confirmation | `test_registry.py`, integration tests (`FakePlatformAdapter`) | Dispatch reaches the platform adapter - verified live; the actual `shutdown /s`/`/r` OS commands were deliberately never triggered (would restart/shut down the machine) |
+| Protected-process denylist | `test_registry.py` | N/A (data, not behavior) - expanded 12→19 entries in Step 5 |
+| Tray icon + manual overrides | none dedicated | **No** - `Orchestrator.run()` blocks on a real windowing event loop; not something to trigger from an automated check. Ported verbatim in Step 7, zero logic changes |
+| Browser automation (open/search/click/YouTube/read-page) | none dedicated (always faked in unit/integration tests) | **Yes** - real Playwright/Chromium: opened example.com, read the page back, ran a real DuckDuckGo search, got real results |
+| Document summarization + targeted Q&A | `test_documents.py` | **Yes** - real file read + real Ollama summary; real RAG hybrid search correctly retrieved the one relevant section out of three and answered from it |
+| RAG hybrid search + rerank | `test_rag.py`, `test_rag_hybrid.py` | **Yes** - against real Postgres + Qdrant (both happened to be running) |
+| Screen reading (OCR) | `test_screen.py` (OCR itself always mocked) | Partially - confirmed real graceful degradation (Tesseract genuinely isn't installed on this machine, so `read my screen` correctly reports that instead of crashing or hallucinating). The OCR-success path itself couldn't be live-verified here for that reason - an environment gap, not a code gap |
+| File search/list/delete/move/copy/rename | `test_files.py`, `test_file_confirmation.py`, integration tests | **Yes** - real delete-confirmation round-trip against a tmp_path (send2trash mocked at the OS boundary only) |
+| Popup file-listing display | `test_popup.py` | Yes, via that test - opens a real Tk window in a background thread, non-mocked, every time the suite runs |
+| Offline STT/TTS fallback | `test_stt.py`, `test_tts.py` (model loading mocked) | **No** - triggering the real fallback needs a live capture session hitting a real network failure; unchanged logic since 2026-08-17, not touched by Steps 4-9 |
+| Audit log, structured JSON-lines | `test_audit.py` | Indirectly - every live check above that dispatched a real capability wrote real audit records |
+| Conversation memory (SQLite, persists across restart) | `test_config.py` and implicitly by every `Vortex()` construction in this session | **Yes** - Step 4's live check confirmed `memory.add_turn` persisted both turns of a real exchange |
+
+Net result: every area either has direct automated coverage, was live-verified
+this session, or both - except the small set of genuinely hardware-gated
+behaviors (real microphone/speaker audio, a real blocking tray event loop,
+a real network-failure-triggered fallback) that no text-based session can
+safely or meaningfully simulate, and which no step from 4 through 9 touched
+the code for anyway. `legacy/main_working_baseline.py` can be considered
+no longer load-bearing as of this check, though per the standing rule it
+stays in the repo as a historical reference regardless.
 
 ---
 
