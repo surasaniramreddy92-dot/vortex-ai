@@ -6,6 +6,13 @@ works it's **Partial**; **Started** means only groundwork exists. This file
 only lists phases with real work — phases with no code yet aren't listed
 here at all; they'll be added, one at a time, as each is actually built.
 
+**This table tracks the master feature roadmap (Phase 0-16) — not the same
+thing as `docs/REFACTOR_PLAN.md`'s Steps 0-10, an internal code-
+organization refactor that finished 2026-08-18 (see Phase 0's row below).
+That refactor changed how the code is structured; it didn't complete any
+feature phase by itself, which is why most rows here are still "Partial"
+even though the refactor itself is 100% done.**
+
 Last updated: 2026-08-18.
 
 | Phase | Name | Status | Notes |

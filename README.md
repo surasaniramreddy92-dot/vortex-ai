@@ -16,6 +16,18 @@ questions about your documents, browses the web, executes a handful of
 deterministic OS commands, and falls back to a local Ollama LLM for
 everything else.
 
+> **Two separate numbered "phase/step" tracks exist in this repo — don't
+> confuse them.** The table below tracks the master **feature roadmap**
+> (Phase 0-16: Voice I/O, OS Automation, Browser, RAG, etc.) — most rows are
+> genuinely "Partial," each with specific, real gaps documented in
+> [IMPLEMENTED.md](IMPLEMENTED.md). Separately,
+> [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md) tracks an **internal
+> code-organization refactor** (Steps 0-10: the god-object `main.py` →
+> `app.py` + `core/`/`platform/`/`llm/`/`tools/`) — that one *is* fully
+> complete, but it changed *how the code is structured*, not *what features
+> exist*. "The refactor is done" and "a feature phase is Partial" are both
+> true at the same time; they're not the same claim.
+
 ## Phases with work in this repo so far
 
 | Phase | Name | Status |
