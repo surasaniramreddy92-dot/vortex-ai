@@ -155,6 +155,58 @@ def test_active_session_only_allows_offline_fallback_on_first_capture():
         f'expected only the first capture to allow offline fallback, got {calls}')
 
 
+# ---------- in_active_session (docs/REFACTOR_PLAN.md Step 7) ----------
+
+def test_in_active_session_is_set_during_the_loop_and_cleared_on_timeout_exit():
+    """core/state_manager.py's ACTIVE_SESSION reading depends on this Event
+    being true for the whole active_session() call and false again the
+    moment it returns - checked here on the normal "ran out of follow-ups"
+    exit path."""
+    from vortex.voice.barge_in import BargeIn
+    from vortex.voice.session import Session
+
+    barge_in = BargeIn()
+    seen_during_capture = []
+
+    def fake_capture_command(timeout=8, allow_offline_on_unclear=True):
+        seen_during_capture.append(session.in_active_session.is_set())
+        return None  # ends the loop immediately (session timed out)
+
+    session = Session(
+        events=None, barge_in=barge_in, session_timeout=8, wake_watchdog_timeout=5,
+        capture_command=fake_capture_command, execute=lambda cmd: None,
+        speak=lambda text: None, greet=lambda: None, warm_up=lambda: None,
+        get_last_audio_at=lambda: 0, recover_wake_stream=lambda: None,
+        is_capturing=lambda: False, clear_awaiting_confirmation=lambda: None,
+        log=lambda msg: None, is_running=lambda: True)
+
+    assert not session.in_active_session.is_set()
+    session.active_session()
+    assert seen_during_capture == [True], 'in_active_session should be set while the loop runs'
+    assert not session.in_active_session.is_set(), 'in_active_session should clear once the loop returns'
+
+
+def test_in_active_session_clears_even_when_stop_speaking_exits_the_loop_early():
+    """Same guarantee on the barge-in early-return path (the top-of-loop
+    stop_speaking check), not just the timeout path above."""
+    from vortex.voice.barge_in import BargeIn
+    from vortex.voice.session import Session
+
+    barge_in = BargeIn()
+    barge_in.stop_speaking.set()
+
+    session = Session(
+        events=None, barge_in=barge_in, session_timeout=8, wake_watchdog_timeout=5,
+        capture_command=lambda timeout=8, allow_offline_on_unclear=True: 'unused',
+        execute=lambda cmd: None, speak=lambda text: None, greet=lambda: None,
+        warm_up=lambda: None, get_last_audio_at=lambda: 0, recover_wake_stream=lambda: None,
+        is_capturing=lambda: False, clear_awaiting_confirmation=lambda: None,
+        log=lambda msg: None, is_running=lambda: True)
+
+    session.active_session()
+    assert not session.in_active_session.is_set()
+
+
 # ---------- worker dispatch ----------
 
 @pytest.fixture

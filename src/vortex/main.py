@@ -1,17 +1,13 @@
 # VORTEX main.py - custom wake word + barge-in + multi-turn session build
 # Windows + ONNX-only wake architecture
-import contextlib
 import datetime
 import logging
 import os
 import queue
-import sys
 import threading
 
 import pygame
-import pystray
 import speech_recognition as sr
-from PIL import Image, ImageDraw
 from dotenv import load_dotenv
 import ollama
 
@@ -39,6 +35,8 @@ from .tools.system import process as system_process
 from .core import intent_router
 from .core.capability_registry import CapabilityRegistry
 from .core.policy_engine import is_affirmative
+from .core.orchestrator import Orchestrator
+from .core.state_manager import current_state
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
@@ -114,7 +112,6 @@ pygame.mixer.init()
 class Vortex:
     def __init__(self):
         self.running = True
-        self.icon = None
         self.recognizer = sr.Recognizer()
         self.current_pid = os.getpid()
         self.awaiting_confirmation = None
@@ -196,6 +193,11 @@ class Vortex:
         # modules instead of one fused matcher+handler chain in main.py.
         self._registry = CapabilityRegistry(self)
 
+        # docs/REFACTOR_PLAN.md Step 7: process lifecycle (tray icon, worker
+        # thread, clean teardown) - what start()/stop()/shutdown() shrink
+        # down to.
+        self.orchestrator = Orchestrator(self)
+
     def log(self, msg):
         logging.info(msg)
 
@@ -217,6 +219,16 @@ class Vortex:
     @property
     def stop_speaking(self):
         return self.barge_in.stop_speaking
+
+    @property
+    def state(self):
+        """docs/REFACTOR_PLAN.md Step 7: explicit VortexState (STANDBY/
+        ACTIVE_SESSION/SPEAKING), computed fresh on every read from the same
+        Events that already drive actual behavior - see
+        core/state_manager.py for why this is a read-only view, not a new
+        source of truth."""
+        return current_state(is_speaking=self.barge_in.speaking.is_set,
+                              is_in_active_session=self.session.in_active_session.is_set)
 
     # ---------- speech output (voice/tts.py owns the actual logic) ----------
 
@@ -499,58 +511,26 @@ class Vortex:
             except Exception as e:
                 self.log(f'Model warm-up failed (embeddings): {e}')
 
+    # ---------- process lifecycle (core/orchestrator.py owns the actual
+    # logic, docs/REFACTOR_PLAN.md Step 7) ----------
+
     def request_stop_speaking(self, icon=None, item=None):
-        self.stop_speaking.set()
+        self.orchestrator.request_stop_speaking(icon, item)
 
     def listen_now(self, icon=None, item=None):
-        self.stop_speaking.set()
-        self.events.put('barge_in')
+        self.orchestrator.listen_now(icon, item)
 
     def stop(self, icon=None, item=None):
-        """The single shutdown path - used by both the "shutdown vortex" voice
-        command and the tray's Exit item. Must stop the tray icon itself, or
-        icon.run() (blocking the main thread in start()) never returns and the
-        process lingers as a zombie: no longer listening or responding, but
-        never actually exiting."""
-        self.running = False
-        self.stop_speaking.set()
-        if self.icon is not None:
-            self.icon.stop()
+        self.orchestrator.stop(icon, item)
 
     def tray_exit(self, icon, item):
-        self.stop()
-
-    def tray_icon(self):
-        img = Image.new('RGB', (64,64), 'black')
-        d = ImageDraw.Draw(img)
-        d.ellipse((16,16,48,48), fill='white')
-        return img
+        self.orchestrator.tray_exit(icon, item)
 
     def shutdown(self):
-        self.running = False
-        self.stop_speaking.set()
-        with contextlib.suppress(Exception):
-            pygame.mixer.music.stop()
-        self.wake.close()
-        with contextlib.suppress(Exception):
-            self.browser.close()
-        with contextlib.suppress(Exception):
-            self.memory.close()
-        if self.rag is not None:
-            with contextlib.suppress(Exception):
-                self.rag.close()
+        self.orchestrator.shutdown()
 
     def start(self):
-        self.wake.start()
-        threading.Thread(target=self.session.worker, daemon=True).start()
-        self.icon = pystray.Icon('VORTEX', self.tray_icon(), 'VORTEX Assistant', menu=pystray.Menu(
-            pystray.MenuItem('Stop talking', self.request_stop_speaking),
-            pystray.MenuItem('Listen now', self.listen_now),
-            pystray.MenuItem('Exit', self.tray_exit)))
-        try:
-            self.icon.run()
-        finally:
-            self.shutdown()
+        self.orchestrator.run()
 
 if __name__ == '__main__':
     Vortex().start()

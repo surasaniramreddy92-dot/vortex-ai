@@ -49,6 +49,12 @@ class Session:
         self.clear_awaiting_confirmation = clear_awaiting_confirmation
         self.log = log
         self.is_running = is_running
+        # docs/REFACTOR_PLAN.md Step 7: the only piece of state genuinely
+        # missing before core/state_manager.py could answer "is VORTEX
+        # inside an active-session follow-up window" - purely additive,
+        # set/cleared around the *outside* of the loop below, touching none
+        # of the barge-in-critical timing logic inside it.
+        self.in_active_session = threading.Event()
 
     def active_session(self):
         """Keep listening for follow-ups (confirmations, next command) without
@@ -65,18 +71,22 @@ class Session:
         the session alive for another window - a real, observed cascade of
         entirely unprompted responses. See stt.py's capture_command
         docstring for the full mechanism."""
-        first = True
-        while self.is_running():
-            if self.barge_in.stop_speaking.is_set():
-                return
-            cmd = self.capture_command(timeout=self.session_timeout,
-                                        allow_offline_on_unclear=first)
-            first = False
-            if cmd is None:
-                self.log('Session timed out, returning to standby')
-                self.clear_awaiting_confirmation()
-                return
-            self.execute(cmd)
+        self.in_active_session.set()
+        try:
+            first = True
+            while self.is_running():
+                if self.barge_in.stop_speaking.is_set():
+                    return
+                cmd = self.capture_command(timeout=self.session_timeout,
+                                            allow_offline_on_unclear=first)
+                first = False
+                if cmd is None:
+                    self.log('Session timed out, returning to standby')
+                    self.clear_awaiting_confirmation()
+                    return
+                self.execute(cmd)
+        finally:
+            self.in_active_session.clear()
 
     def worker(self):
         """Owns every slow operation: speaking, listening, executing."""
