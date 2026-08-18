@@ -1,0 +1,37 @@
+# docs/REFACTOR_PLAN.md Step 9: lint + type-check + pytest (unit +
+# integration) on every push/PR, deliberately excluding anything marked
+# `hardware` (needs a real microphone, Ollama, or a Windows GUI process -
+# see pyproject.toml's marker registration and
+# tests/integration/test_execute_pipeline.py's one hardware-marked test).
+# Windows runner because VORTEX is a Windows-only app (pystray, the
+# platform/windows/* adapter, etc.) - a Linux runner couldn't import half
+# of what this test suite exercises.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project (all runtime extras + dev tooling)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,voice-offline,dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Type-check (mypy)
+        run: mypy src/vortex --ignore-missing-imports
+
+      - name: Run tests (unit + integration, excluding hardware-dependent)
+        run: pytest tests/unit tests/integration -m "not hardware" -v
