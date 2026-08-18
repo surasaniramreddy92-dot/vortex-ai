@@ -23,6 +23,7 @@ since that's exactly the kind of subtle bug that defeats the point of a
 every construction instead.
 """
 from dataclasses import dataclass, field
+from pathlib import Path
 import os
 
 
@@ -46,12 +47,20 @@ def _bool_env(name, default):
 
 
 def _default_root():
-    # Path.home()-based fallback, not the hardcoded E:\VORTEX main.py uses today
-    # - see docs/CURRENT_STATE.md Section 4 for why the hardcoded path is a real
-    # portability problem. VORTEX_HOME lets Step 2's migration point this back at
-    # E:\VORTEX explicitly, preserving continuity with existing logs/data/models
-    # on this machine rather than silently relocating them.
-    return os.getenv('VORTEX_HOME', r'E:\VORTEX')
+    # Path.home()-based fallback - see docs/CURRENT_STATE.md Section 4 for why
+    # a hardcoded drive-letter path is a real portability problem (it doesn't
+    # just break on Linux/macOS - it breaks on any Windows machine, including
+    # a CI runner, that isn't this exact E: drive). This comment used to
+    # describe this exact fallback while the code beneath it hardcoded
+    # r'E:\VORTEX' as the literal default anyway - caught by
+    # docs/REFACTOR_PLAN.md Step 10's feature-parity check actually running
+    # CI for real on a fresh machine, not by local testing (which always ran
+    # on this exact E: drive and could never have caught it). VORTEX_HOME is
+    # set explicitly in this machine's own .env (gitignored, not this
+    # default) to E:\VORTEX, preserving continuity with existing logs/data/
+    # models here - the code default only matters for a machine that hasn't
+    # set it, which was never true for local runs, only for CI.
+    return os.getenv('VORTEX_HOME', str(Path.home() / '.vortex'))
 
 
 @dataclass(frozen=True)
