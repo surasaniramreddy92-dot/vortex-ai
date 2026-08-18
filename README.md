@@ -34,12 +34,12 @@ everything else.
 |---|---|---|
 | 0 | Engineering Foundation & Repository Discipline | Partial |
 | 1 | Voice I/O Foundation | Partial |
-| 2 | Desktop & OS Automation | Partial |
-| 3 | Browser Automation & Web Interaction | Partial |
+| 2 | Desktop & OS Automation | **Implemented (v1)** |
+| 3 | Browser Automation & Web Interaction | **Implemented (v1)** |
 | 4 | LLM Brain, Tool Calling & Hybrid Intent Routing | Partial |
 | 5 | Memory, Knowledge & Production RAG | Partial |
 | 6 | Wake Word, Session Mode & Barge-In | **Implemented (v1)** |
-| 7 | Document Intelligence | Partial |
+| 7 | Document Intelligence | **Implemented (v1)** |
 | 8 | Vision | Started |
 | 15 | Security, Identity & Policy Enforcement | Partial |
 
