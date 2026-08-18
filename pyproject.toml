@@ -119,6 +119,12 @@ wakeword-training = [
 ]
 dev = [
     "pytest==9.1.1",
+    # docs/REFACTOR_PLAN.md Step 9: CI lint/type-check. ruff is scoped to
+    # Pyflakes + syntax-error rules only (see .github/workflows/ci.yml) -
+    # verified clean at these versions on the current codebase before
+    # adding them here, not assumed.
+    "ruff==0.16.3",
+    "mypy==2.3.1",
 ]
 # Everything needed to actually run `python -m src.vortex.main` today.
 # Deliberately excludes voice-offline - see that extra's comment above for
@@ -131,3 +137,23 @@ all = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# docs/REFACTOR_PLAN.md Step 9: registers the `hardware` marker so tests can
+# opt out of the default CI run instead of CI having to opt individual tests
+# in - anything needing a real microphone, Ollama, or a Windows GUI process
+# gets this marker; .github/workflows/ci.yml runs with `-m "not hardware"`.
+markers = [
+    "hardware: needs a real microphone, Ollama, or a Windows GUI process - skipped by default in CI",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pyflakes (real correctness bugs: unused imports, undefined names, etc.)
+# and syntax errors only - deliberately not pycodestyle (E/W) or import-
+# sorting: this codebase has no established formatting convention to
+# enforce, and turning those on now would flag ~150 pre-existing lines for
+# a stylistic reason, not a bug, which isn't this step's job to fix.
+select = ["F", "E9"]

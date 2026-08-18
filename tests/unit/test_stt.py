@@ -15,7 +15,6 @@ import sys
 import threading
 from unittest.mock import Mock
 
-import pytest
 import speech_recognition as sr
 
 # Same fix test_barge_in.py already needed: an editable install of vortex-ai

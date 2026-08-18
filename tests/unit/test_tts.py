@@ -16,7 +16,6 @@ from unittest.mock import Mock
 
 import aiohttp
 import edge_tts.exceptions
-import pytest
 
 # Same fix test_barge_in.py already needed: an editable install of vortex-ai
 # resolves `import vortex` to wherever `pip install -e .` was originally run

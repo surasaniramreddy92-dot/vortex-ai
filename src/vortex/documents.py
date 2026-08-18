@@ -60,10 +60,10 @@ _log = logging.getLogger('vortex.documents')
 # Cached across calls within a process: OCR (when it runs at all) is the
 # expensive part of PDF extraction, and both extract_text() and extract_pages()
 # independently re-extract the same file on every voice question against it
-# (main.py has no text cache of its own) - re-running Tesseract on every
+# (app.py has no text cache of its own) - re-running Tesseract on every
 # question for the same scanned document would be wasteful. Keyed on mtime so
 # an edited file is picked up rather than serving stale OCR output.
-_pdf_pages_cache = {}
+_pdf_pages_cache: dict[tuple, list] = {}
 
 # Cached result of the one-time "is Tesseract actually usable" probe (pip
 # package importable AND the tesseract binary on PATH) - checked once, not
