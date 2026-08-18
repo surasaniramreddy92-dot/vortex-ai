@@ -6,11 +6,9 @@ import logging
 import os
 import queue
 import re
-import subprocess
 import sys
 import threading
 
-import psutil
 import pygame
 import pystray
 import speech_recognition as sr
@@ -34,6 +32,11 @@ from .voice.tts import TextToSpeech, MAX_CHUNK
 from .voice.stt import SpeechToText
 from .voice.session import Session
 from .llm.ollama_provider import OllamaProvider
+from .platform.windows.power import WindowsPlatformAdapter
+from .platform.windows.apps import NATIVE_APPS, WEB_APPS
+from .platform.windows.protected_processes import PROTECTED_PROCESSES
+from .tools.system import apps as system_apps
+from .tools.system import process as system_process
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
@@ -105,6 +108,28 @@ SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-bac
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 pygame.mixer.init()
 
+_AFFIRMATIVE_WORDS = {'yes', 'yeah', 'yep', 'yup', 'sure', 'confirm', 'confirmed', 'proceed'}
+_NEGATIVE_WORDS = {'no', 'nope', 'nah', "don't", 'dont', 'cancel', 'stop', 'negative'}
+
+
+def _is_affirmative(cmd):
+    """Real yes/no classification for handle_confirmation, replacing a
+    'yes' in cmd substring check that a misheard "no, not yes I don't want
+    that" would have matched as confirmation (flagged in
+    docs/CURRENT_STATE.md §6; the fix is pulled forward from Step 6's
+    core/policy_engine.py into this refactor's Step 5, ahead of the rest of
+    that step's intent-routing work - it'll move again, unchanged, when
+    Step 6 actually lands).
+
+    Whole-word matching (not substring), and any negative word anywhere
+    wins over an affirmative one, so "no", "not yes", and "don't" all
+    correctly decline even though they'd have matched the old check."""
+    words = set(re.findall(r"[a-z']+", cmd))
+    if words & _NEGATIVE_WORDS:
+        return False
+    return bool(words & _AFFIRMATIVE_WORDS) or 'go ahead' in cmd or 'do it' in cmd
+
+
 class Vortex:
     def __init__(self):
         self.running = True
@@ -173,21 +198,15 @@ class Vortex:
             clear_awaiting_confirmation=self._clear_awaiting_confirmation,
             log=self.log, is_running=lambda: self.running)
 
-        self.protected = {
-            'python.exe','pythonw.exe','ollama.exe','explorer.exe','winlogon.exe','csrss.exe',
-            'services.exe','lsass.exe','dwm.exe','system','taskhostw.exe','shellhost.exe'
-        }
-        self.native_apps = {
-            'outlook': 'outlook.exe', 'chrome': 'chrome.exe', 'edge': 'msedge.exe',
-            'vscode': 'code.exe', 'vs code': 'code.exe', 'visual studio code': 'code.exe',
-            'notepad': 'notepad.exe', 'calculator': 'calc.exe', 'paint': 'mspaint.exe',
-            'whatsapp': 'whatsapp.exe', 'teams': 'teams.exe', 'spotify': 'spotify.exe'
-        }
-        self.web_apps = {
-            'youtube': 'https://youtube.com', 'gmail': 'https://mail.google.com',
-            'github': 'https://github.com', 'chatgpt': 'https://chatgpt.com',
-            'google': 'https://google.com', 'whatsapp': 'https://web.whatsapp.com'
-        }
+        # docs/REFACTOR_PLAN.md Step 5: the *what* (open/close/shutdown) lives
+        # in tools/system/* and this class; the *how* (Windows exe/URL tables,
+        # the protected-process denylist, the shutdown/restart/lock commands)
+        # lives in platform/windows/* - moved as-is except protected_processes,
+        # expanded per the security-review gap in docs/CURRENT_STATE.md §6.
+        self.protected = PROTECTED_PROCESSES
+        self.native_apps = NATIVE_APPS
+        self.web_apps = WEB_APPS
+        self.platform = WindowsPlatformAdapter()
 
         # Capability registry (see _build_registry docstring below) - built
         # once per instance so its handler closures capture this instance's
@@ -330,74 +349,32 @@ class Vortex:
     # ---------- actions ----------
 
     def open_target(self, target):
-        """Native apps launch locally. Anything web-related routes through the
-        one Playwright-controlled browser (self.browser) instead of the system's
-        default browser, so there's a single consistent, automatable browser
-        session rather than two different ones depending which path fires -
-        and so an unmatched multi-word phrase gets an actual web search with
-        results read back, not a silent literal-phrase Google search window."""
-        target = target.lower().strip()
-        if target in self.native_apps:
-            try:
-                subprocess.Popen(self.native_apps[target])
-                self.speak(f'Opening {target}.')
-                return True
-            except OSError: pass
-        if target in self.web_apps:
-            self.browser.open(self.web_apps[target])
-            self.speak(f'Opening {target}.')
-            return True
-        self.speak(self.browser.open(target))
+        """Delegates to tools/system/apps.py (docs/REFACTOR_PLAN.md Step 5) -
+        same native-app-first, then web-app, then browser-search fallback."""
+        self.speak(system_apps.open_target(target, self.native_apps, self.web_apps, self.browser))
         return True
 
     def close_named_app(self, target):
-        exe = self.native_apps.get(target.lower())
-        if not exe:
-            self.audit.record('close_app', target, 'failed', reason='unknown_app')
-            self.speak(f"I don't know how to close {target} yet.")
-            return
-        closed = False
-        for p in psutil.process_iter(['name']):
-            try:
-                if (p.info['name'] or '').lower() == exe.lower():
-                    p.terminate()
-                    closed = True
-            except psutil.Error: pass
-        if closed:
-            self.audit.record('close_app', target, 'executed')
-        else:
-            self.audit.record('close_app', target, 'failed', reason='not_running')
-        self.speak(f'Closed {target}.' if closed else f'{target} was not running.')
+        self.speak(system_process.close_named_app(target, self.native_apps, self.audit))
 
     def close_all_apps(self):
-        count = 0
-        for p in psutil.process_iter(['pid', 'name']):
-            try:
-                name = (p.info['name'] or '').lower()
-                pid = p.info['pid']
-                if not name or pid == self.current_pid or name in self.protected:
-                    continue
-                p.terminate()
-                count += 1
-            except psutil.Error: pass
-        self.audit.record('close_all', 'all_non_protected_processes', 'executed', count=count)
-        self.speak(f'Closed {count} applications.')
+        self.speak(system_process.close_all_apps(self.current_pid, self.protected, self.audit))
 
     def system_shutdown(self):
         self.speak('Shutting down the system. See you soon Boss.')
         self.audit.record('shutdown', 'system', 'executed')
-        subprocess.Popen('shutdown /s /t 5', shell=True)
+        self.platform.shutdown()
 
     def system_restart(self):
         self.speak('Restarting the system now Boss.')
         self.audit.record('restart', 'system', 'executed')
-        subprocess.Popen('shutdown /r /t 5', shell=True)
+        self.platform.restart()
 
     def lock_system(self):
         # No confirmation needed, unlike shutdown/restart/close-all: locking is
         # trivially reversible (just log back in) and loses no unsaved work.
         self.speak('Locking the system now Boss.')
-        subprocess.Popen('rundll32.exe user32.dll,LockWorkStation', shell=True)
+        self.platform.lock()
 
     # ---------- file operations (files.py owns path resolution/safety) ----------
     # list/search are read-only, so they run immediately with no confirmation
@@ -459,7 +436,7 @@ class Vortex:
             return False
         pending = self.awaiting_confirmation
         action = pending['action']
-        if 'yes' in cmd:
+        if _is_affirmative(cmd):
             self.awaiting_confirmation = None
             if action == 'close_all': self.close_all_apps()
             elif action == 'shutdown': self.system_shutdown()
