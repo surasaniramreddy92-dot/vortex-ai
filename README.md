@@ -20,7 +20,7 @@ everything else.
 
 | Phase | Name | Status |
 |---|---|---|
-| 0 | Engineering Foundation & Repository Discipline | Started |
+| 0 | Engineering Foundation & Repository Discipline | Partial |
 | 1 | Voice I/O Foundation | Partial |
 | 2 | Desktop & OS Automation | Partial |
 | 3 | Browser Automation & Web Interaction | Partial |
@@ -28,6 +28,7 @@ everything else.
 | 5 | Memory, Knowledge & Production RAG | Partial |
 | 6 | Wake Word, Session Mode & Barge-In | **Implemented (v1)** |
 | 7 | Document Intelligence | Partial |
+| 8 | Vision | Started |
 | 15 | Security, Identity & Policy Enforcement | Partial |
 
 Everything else in the master roadmap (vision, service layer, durable
