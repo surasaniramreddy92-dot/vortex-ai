@@ -107,7 +107,16 @@ OFFLINE_TTS_MODEL_DIR = _cfg.offline_tts_model_dir
 HISTORY_TURNS = _cfg.history_turns
 SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-backed Q&A doesn't need this cap
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-pygame.mixer.init()
+try:
+    pygame.mixer.init()
+except pygame.error as e:
+    # A machine with no real audio output device (a CI runner, a headless
+    # test environment) raises here - degrade instead of making merely
+    # *importing* this module impossible everywhere except a real desktop
+    # with speakers. Nothing in the test suite drives real TTS playback
+    # (every test mocks speak/speak_stream), so this only matters for
+    # import-time collection, not for any currently-tested playback path.
+    logging.warning(f'pygame.mixer.init() failed, TTS playback will be unavailable: {e}')
 
 
 class Vortex:
