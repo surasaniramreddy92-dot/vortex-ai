@@ -65,13 +65,29 @@ tests/unit/test_config.py` passes; report back before Step 2.
 
 ---
 
-## Step 2 — Extract configuration + logging (into the app, not just alongside it)
+## Step 2 — Extract configuration + logging (into the app, not just alongside it) (partially done)
 
-**Goal:** `main.py` actually uses `config.py` instead of its own
-module-level `os.getenv` calls. Replace `logging.basicConfig(...)` with a
-small `observability/logging.py` setup (still a flat file for now — no
-structured logging yet, that's a later phase — just moved out of `main.py`
-and given a place to grow).
+The config half landed exactly as planned (`main.py`, now `app.py`, reads
+every value from `VortexConfig` instead of its own `os.getenv` calls) and
+was marked done via its own `CHANGELOG.md` entry at the time. **The
+logging half of this step's own goal never actually happened** —
+`logging.basicConfig(...)` is still one inline line in `app.py`, not its
+own `observability/logging.py` module. Caught 2026-08-18 while updating
+`docs/ARCHITECTURE.md` to reflect the completed refactor (Steps 0-10) and
+noticing this one piece was the sole remaining "CREATE NOW" item still
+unbuilt. Left as-is rather than fixed in that same pass, since it wasn't
+what that pass was about - the smallest known leftover gap in the whole
+refactor, safe to pick up whenever someone actually wants
+`observability/logging.py` to exist (e.g. the day structured logging
+becomes a real, separate phase, which was always this step's original
+framing: "still a flat file for now... just moved out of main.py and given
+a place to grow").
+
+**Original goal (for reference):** `main.py` actually uses `config.py`
+instead of its own module-level `os.getenv` calls. Replace
+`logging.basicConfig(...)` with a small `observability/logging.py` setup
+(still a flat file for now — no structured logging yet, that's a later
+phase — just moved out of `main.py` and given a place to grow).
 
 **Mapping:**
 | Current (`main.py` lines, approx.) | Moves to |

@@ -44,11 +44,25 @@ on something only present on your laptop.
 your code about what kind of change just happened — a patch release should
 never break someone's integration; a major one might.
 
-*Where VORTEX stands:* a git repo, `.gitignore`, and a first commit exist.
-No typed config, no CI, no tests, no lint gate yet — the single most valuable
-next investment before the codebase grows further, because every phase after
-this one gets more expensive to retrofit with tests and structure the later
-you leave it.
+*Where VORTEX stands (updated 2026-08-18):* all of this now exists, landed
+via `docs/REFACTOR_PLAN.md`'s 11-step refactor (Steps 0-10, complete).
+Typed config is `src/vortex/config.py` — a frozen dataclass (not Pydantic
+Settings; the concept above is the same, VORTEX just didn't need a
+validation library on top of it), one env var per field, every default
+documented. Static analysis is `ruff` (Pyflakes + syntax-error rules only —
+deliberately not the full pycodestyle/formatting ruleset, since retrofitting
+style enforcement onto ~150 pre-existing findings wasn't this pass's job)
+and `mypy`; no code formatter (Black) is configured. CI is
+`.github/workflows/ci.yml` — lint, type-check, then `tests/unit` +
+`tests/integration` (228 tests) on every push, excluding anything needing
+real hardware (a separate, manually-triggered workflow,
+`.github/workflows/hardware.yml`, per §"CI must not require microphone,
+GUI, Ollama, or Windows desktop" in `docs/ARCHITECTURE.md`). Standing up CI
+for the first time immediately caught four real portability bugs this one
+dev machine's own setup state had silently masked for months — see
+`docs/REFACTOR_PLAN.md` Step 9/10's done-notes and `CHANGELOG.md` for what
+they were. No semantic versioning yet (`pyproject.toml` still says
+`0.1.0`), no pre-commit hooks (CI is post-push, not pre-commit).
 
 ---
 

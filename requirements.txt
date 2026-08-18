@@ -1,3 +1,10 @@
+# DEPRECATED as of docs/REFACTOR_PLAN.md Step 1 - pyproject.toml's dependency
+# groups (extras: voice, voice-offline, windows, documents, browser, rag,
+# dev, all) are the actual source of truth now and have been for a while;
+# this file is missing send2trash, pytesseract, faster-whisper/piper-tts,
+# ruff/mypy, and everything else added since. Kept only because deleting it
+# outright wasn't this pass's call to make - use `pip install -e ".[all]"`
+# (see README's Quickstart), not this file.
 # VORTEX desktop voice assistant dependencies
 # NumPy 2.x is intentionally avoided because the ONNX wake-word stack currently
 # uses the NumPy 1.x ABI.
