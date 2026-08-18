@@ -2,9 +2,14 @@
 
 Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
 (target design). This is the *sequence* — what changes, in what order, and
-the exit criteria for each step. Nothing in this document has been executed
-yet beyond Step 0 (safety net) and Step 1 prep; each subsequent step waits
-for explicit sign-off before starting, per your instruction.
+the exit criteria for each step. Steps 0-4 are done (see each step's own
+"done" note for what actually landed and any judgment calls made along the
+way); the refactor was on hold between Step 3 and Step 4 while capability
+work (offline STT/TTS fallback, file ops, hybrid RAG search, OCR document
+intelligence, screen reading, popups) shipped directly on top of `main.py`
+instead - none of that is reflected in Steps 5-10's mapping tables below,
+which still describe the codebase as it looked when this plan was written.
+Each step from here still waits for explicit sign-off before starting.
 
 **Hard rule for every step below:** run whatever tests exist, confirm no
 regression in the "preserve these" feature list, report exactly which files
@@ -128,7 +133,33 @@ audio/synthesis (no real mic/speaker needed in CI).
 
 ---
 
-## Step 4 — Extract the LLM provider
+## Step 4 — Extract the LLM provider (done, 2026-08-18)
+
+Landed as planned, with four judgment calls documented in-file rather than
+here: `llm/prompts.py` was **not** created - `SYSTEM_PROMPT` already lives in
+`config.py` as of Step 2, so a second home for the same string would just be
+a redundant indirection with no seam it doesn't already have. The two
+`_warm_up_models` pings (`ollama.chat(...,'hi')`, `ollama.embeddings(...)`)
+were left calling `ollama` directly - a startup health check is a different
+concern from the streaming reasoning path this step is about, and folding it
+into `LLMProvider` would have widened the interface for no near-term
+benefit. `_stream_llm_answer` (the document/RAG-answer streaming path) was
+migrated alongside `ask_llm_stream` even though the original plan below only
+named the latter - it runs the identical `ollama.chat` + polling pattern, and
+leaving it on raw `ollama.chat` while `ask_llm_stream` moved would have been
+an inconsistent half-migration. `OllamaProvider.chat_stream` is a plain
+method that calls `ollama.chat(...)` eagerly and *returns* a generator,
+rather than being a generator function itself - so a connection failure
+raises immediately to the caller's first `try/except` exactly as it did
+inline in `main.py`, instead of being deferred to the first `next()` on the
+returned iterator (which would have misrouted the error into the *second*
+`except` block and logged a different message for the same user-visible
+outcome). Verified: full `pytest` suite (167 tests) green, zero regressions;
+a live sanity check - real `Vortex()`, real `ask_llm_stream` call against
+real Ollama, real streamed reply, confirmed `memory.add_turn` persisted both
+turns - not just the mocked test suite.
+
+## Step 4 (original plan, preserved below for reference) — Extract the LLM provider
 
 **Goal:** isolate Ollama specifics behind a `Provider` interface so a cloud
 adapter can be added later without touching call sites.
