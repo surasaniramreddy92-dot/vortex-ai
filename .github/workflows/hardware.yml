@@ -1,0 +1,30 @@
+# docs/REFACTOR_PLAN.md Step 9: the counterpart to ci.yml's `-m "not
+# hardware"` exclusion - runs only the tests that need a real Windows GUI
+# process (today: tests/integration/test_execute_pipeline.py's real-Notepad
+# test; a real microphone/Ollama would land here too if a test ever needs
+# one). Manually triggered only, never blocks a push or PR - a GitHub-hosted
+# runner opening/closing a real notepad.exe is safe, but there's no reason
+# to spend CI minutes on it every push when ci.yml already covers the same
+# dispatch logic through fakes.
+name: Hardware-dependent tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project (all runtime extras + dev tooling)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,voice-offline,dev]"
+
+      - name: Run hardware-marked tests only
+        run: pytest tests/unit tests/integration -m "hardware" -v
