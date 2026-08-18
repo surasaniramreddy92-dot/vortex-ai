@@ -299,7 +299,7 @@ barge-in, and general Q&A all still work correctly together.
 
 ### Changed
 - **Resumed the modular refactor (`docs/REFACTOR_PLAN.md`), on hold since
-  Step 3: Steps 4 and 5, both tested and pushed same-day.**
+  Step 3: Steps 4, 5, and 6, each tested and pushed same-day.**
   - **Step 4 — LLM provider extraction.** `llm/provider.py` (abstract
     `LLMProvider.chat_stream`) + `llm/ollama_provider.py` (concrete
     `OllamaProvider`) now own the `ollama.chat` call and the queue/thread
@@ -331,15 +331,31 @@ barge-in, and general Q&A all still work correctly together.
     end-to-end. Shutdown/restart/close-all/lock deliberately not
     live-triggered (disruptive to a running session) - verified by code
     reading instead, since each is a verbatim port.
-  - Both steps: full `pytest` suite (167 tests) green after each, zero
-    regressions; `REFACTOR_PLAN.md` updated in the same commit as each step
-    with a "done" note documenting what actually landed and any judgment
-    calls made along the way, same convention Step 3 established.
-  - Steps 6-10 (capability registry/intent router, orchestrator, thin
-    bootstrap, test hardening, feature-parity checklist) remain - Step 6 in
-    particular needs updated scope, since `awaiting_confirmation` now also
-    covers `delete_file`/`move_file`/`rename_file`, not just the three
-    OS-automation actions the original plan named.
+  - **Step 6 — capability registry + intent router.** `core/intent_router.py`'s
+    `route(cmd)` is a genuinely pure function - 26 frozen Intent dataclasses,
+    zero side effects, not even a `Vortex` instance needed - replacing the
+    297-line, 24-entry fused matcher+handler chain that used to live in
+    `main.py`'s `_build_registry`. `core/capability_registry.py`'s
+    `CapabilityRegistry(host).dispatch(intent)` is the deliberately-impure
+    dispatch half, every handler a direct port of the old closures; it
+    asserts full dispatch coverage at construction time. `core/policy_engine.py`
+    got `is_affirmative()` moved into it, completing the move Step 5's note
+    promised. A fully general confirmation-policy engine (Phase 15 of the
+    master roadmap) was deliberately not built - out of this step's actual
+    scope. Three structural tests that inspected the old registry's internals
+    directly were rewritten against the new shape; every behavioral test
+    needed zero changes, since `execute()`'s external behavior is
+    byte-identical. Verified live: a real `Vortex()` opening/closing a real
+    Notepad process through `execute()` end-to-end, and the exact flagged
+    confirmation-bug scenario correctly declining.
+  - All three steps: full `pytest` suite green after each (214 tests by the
+    end, 47 new), zero regressions; `REFACTOR_PLAN.md` updated in the same
+    commit as each step with a "done" note documenting what actually landed
+    and any judgment calls made along the way, same convention Step 3
+    established.
+  - Steps 7-10 (orchestrator/state manager, thin bootstrap, test hardening +
+    CI, feature-parity checklist) remain - their mapping tables still
+    describe the codebase as it looked when this plan was written.
 
 ## 2026-08-16
 
