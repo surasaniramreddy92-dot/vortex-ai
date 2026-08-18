@@ -46,10 +46,25 @@ def test_defaults_match_main_py():
 
 def test_root_dependent_paths_resolve_from_root():
     cfg = VortexConfig.from_env()
-    assert cfg.wake_word == os.path.join(cfg.root, 'tools', 'wakeword', 'models', 'hey_vortex.onnx')
     assert cfg.log_dir == os.path.join(cfg.root, 'logs')
     assert cfg.data_dir == os.path.join(cfg.root, 'data')
     assert cfg.memory_db_path == os.path.join(cfg.data_dir, 'vortex_memory.db')
+
+
+def test_wake_word_default_is_repo_relative_not_root_relative():
+    """Regression test for a real bug: wake_word's default used to be
+    derived from `root` (os.path.join(root, 'tools', 'wakeword', ...)),
+    which only ever "worked" because this repo's checkout and its
+    VORTEX_HOME happened to be the same E:\\VORTEX directory on this one
+    machine. The trained model is a repo-committed asset, not user data -
+    its default must resolve relative to config.py's own file location,
+    independent of root/VORTEX_HOME entirely. Caught when CI (a fresh
+    checkout with VORTEX_HOME defaulting to ~/.vortex, nowhere near the
+    repo) failed to find the model at all."""
+    from vortex.config import _DEFAULT_WAKE_WORD_PATH
+    cfg = VortexConfig.from_env()
+    assert cfg.wake_word == str(_DEFAULT_WAKE_WORD_PATH)
+    assert os.path.exists(cfg.wake_word), 'the real, repo-committed model file should exist at this path'
 
 
 def test_env_var_override(monkeypatch):
@@ -60,16 +75,19 @@ def test_env_var_override(monkeypatch):
     assert cfg.voice == 'en-GB-SoniaNeural'
 
 
-def test_root_override_changes_dependent_paths(monkeypatch):
+def test_root_override_changes_dependent_paths_but_not_wake_word(monkeypatch):
+    from vortex.config import _DEFAULT_WAKE_WORD_PATH
     monkeypatch.setenv('VORTEX_HOME', r'C:\CustomRoot')
     cfg = VortexConfig.from_env()
     assert cfg.root == r'C:\CustomRoot'
     assert cfg.log_dir == r'C:\CustomRoot\logs'
-    assert cfg.wake_word == r'C:\CustomRoot\tools\wakeword\models\hey_vortex.onnx'
+    # wake_word is repo-relative, not root-relative - a root override must
+    # not move it (see test_wake_word_default_is_repo_relative_not_root_relative).
+    assert cfg.wake_word == str(_DEFAULT_WAKE_WORD_PATH)
 
 
-def test_wake_word_env_override_bypasses_root(monkeypatch):
-    """VORTEX_WAKE_WORD, if set directly, should win over the root-derived path."""
+def test_wake_word_env_override_bypasses_the_repo_relative_default(monkeypatch):
+    """VORTEX_WAKE_WORD, if set directly, should win over the repo-relative default."""
     monkeypatch.setenv('VORTEX_WAKE_WORD', r'D:\somewhere\custom_model.onnx')
     cfg = VortexConfig.from_env()
     assert cfg.wake_word == r'D:\somewhere\custom_model.onnx'

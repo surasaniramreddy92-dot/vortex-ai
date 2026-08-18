@@ -63,6 +63,20 @@ def _default_root():
     return os.getenv('VORTEX_HOME', str(Path.home() / '.vortex'))
 
 
+# The trained wake model is a repo-committed asset (tools/wakeword/models/
+# hey_vortex.onnx, ~394KB, checked into git per docs/CURRENT_STATE.md §1) -
+# code shipped alongside src/vortex/, not user-generated runtime data like
+# logs/memory/audit. It must resolve relative to *this file's own location*
+# (the repo/package checkout), never relative to VORTEX_HOME/root - those
+# two happened to be the same directory on this machine (E:\VORTEX is both
+# the git checkout and where VORTEX_HOME pointed), which is exactly why
+# `root`-relative resolution looked correct here but broke the instant CI
+# ran with VORTEX_HOME defaulting to a real user-data directory
+# (~/.vortex) that obviously doesn't contain the repo's tools/ folder.
+_DEFAULT_WAKE_WORD_PATH = (
+    Path(__file__).resolve().parents[2] / 'tools' / 'wakeword' / 'models' / 'hey_vortex.onnx')
+
+
 @dataclass(frozen=True)
 class VortexConfig:
     root: str = field(default_factory=_default_root)
@@ -274,8 +288,7 @@ class VortexConfig:
     audit_log_path: str = field(default='')
 
     def __post_init__(self):
-        object.__setattr__(self, 'wake_word', os.getenv(
-            'VORTEX_WAKE_WORD', os.path.join(self.root, 'tools', 'wakeword', 'models', 'hey_vortex.onnx')))
+        object.__setattr__(self, 'wake_word', os.getenv('VORTEX_WAKE_WORD', str(_DEFAULT_WAKE_WORD_PATH)))
         object.__setattr__(self, 'log_dir', os.path.join(self.root, 'logs'))
         object.__setattr__(self, 'data_dir', os.path.join(self.root, 'data'))
         object.__setattr__(self, 'memory_db_path', os.getenv(
