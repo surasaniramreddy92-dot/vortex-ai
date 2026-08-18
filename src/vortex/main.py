@@ -33,6 +33,7 @@ from .voice.wake import WakeDetector
 from .voice.tts import TextToSpeech, MAX_CHUNK
 from .voice.stt import SpeechToText
 from .voice.session import Session
+from .llm.ollama_provider import OllamaProvider
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 load_dotenv()
@@ -104,12 +105,6 @@ SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-bac
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 pygame.mixer.init()
 
-# Used only by _poll_stream's token queue below - voice/tts.py has its own,
-# independent _STOP sentinel for its own audio queue. Two separate objects on
-# purpose: each queue's consumer only ever compares against the sentinel its
-# own producer put there, so there's no need (and no benefit) to share one.
-_STOP = object()
-
 class Vortex:
     def __init__(self):
         self.running = True
@@ -153,6 +148,10 @@ class Vortex:
             stop_wake_stream=self.wake.stop_stream, recover_wake_stream=self.wake.recover_stream,
             log=self.log, offline_enabled=OFFLINE_FALLBACK_ENABLED, offline_model_size=OFFLINE_STT_MODEL,
             offline_model_dir=OFFLINE_STT_MODEL_DIR)
+        # docs/REFACTOR_PLAN.md Step 4: Ollama specifics live behind
+        # LLMProvider now, not inline in ask_llm_stream/_stream_llm_answer.
+        self.llm = OllamaProvider(model=MODEL, max_tokens=LLM_MAX_TOKENS, barge_in=self.barge_in,
+                                   is_running=lambda: self.running)
         # Callables below are lambdas closing over `self` and calling back
         # through Vortex's own (dynamically-dispatched) methods, not pre-bound
         # references captured once - so instance-level monkeypatching of
@@ -204,7 +203,8 @@ class Vortex:
     # ---------- speaking/stop_speaking: back-compat passthroughs ----------
     # Kept as properties (not moved-and-gone) because they're checked/set from
     # several places still in this file (execute()'s callers, tray callbacks,
-    # _poll_stream/ask_llm_stream's barge-in-aware LLM streaming below) and by
+    # ask_llm_stream/_stream_llm_answer's barge-in-aware LLM streaming below,
+    # and llm/ollama_provider.py via the injected barge_in object) and by
     # external callers (tools/test_barge_in.py) that predate this extraction -
     # same two Event objects, now owned by self.barge_in.
 
@@ -234,57 +234,8 @@ class Vortex:
     def capture_command(self, timeout=8, allow_offline_on_unclear=True):
         return self.stt.capture_command(timeout=timeout, allow_offline_on_unclear=allow_offline_on_unclear)
 
-    # ---------- reasoning ----------
-
-    def _poll_stream(self, stream):
-        """Consume an Ollama streaming response on a background thread and yield
-        tokens through a polled queue, instead of a plain `for part in stream`.
-
-        A plain for-loop blocks on the network read for the *next* token, and
-        only re-checks stop_speaking once one arrives - fine when Ollama is
-        warm, but this session's model failed to warm at startup (Ollama
-        wasn't up yet when VORTEX tried), so the first real request paid a
-        cold-load cost mid-generation. Live evidence: a barge-in was logged as
-        "triggered" but the current answer kept playing for another ~20s
-        before "yielding the floor" actually appeared - the generator was
-        blocked waiting on Ollama's next token the whole time, deaf to
-        stop_speaking. Mirrors the same producer-thread-plus-polled-queue
-        pattern _speak_chunks already uses for TTS, so stop_speaking is now
-        checked at least every 0.1s regardless of how slow Ollama is.
-
-        Stays in main.py rather than moving to voice/tts.py (judgment call,
-        docs/REFACTOR_PLAN.md Step 3): it polls Ollama's LLM stream, not TTS
-        audio - its domain is LLM streaming (Step 4's llm/ package), not
-        voice synthesis, even though it shares the barge-in cancellation
-        pattern with voice/tts.py's _synth/_speak_chunks. Moving it into
-        voice/tts.py would misfile LLM logic into the TTS module and leave
-        Step 4 to untangle it later; leaving it here keeps it available to
-        move again, as one piece, when the LLM provider is actually
-        extracted."""
-        token_q = queue.Queue(maxsize=8)
-
-        def pump():
-            try:
-                for part in stream:
-                    token_q.put(part['message']['content'])
-            except Exception as e:
-                token_q.put(e)
-            finally:
-                token_q.put(_STOP)
-
-        threading.Thread(target=pump, daemon=True).start()
-        while True:
-            if self.stop_speaking.is_set() or not self.running:
-                return
-            try:
-                item = token_q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            if item is _STOP:
-                return
-            if isinstance(item, Exception):
-                raise item
-            yield item
+    # ---------- reasoning (Ollama specifics live in llm/ollama_provider.py,
+    # docs/REFACTOR_PLAN.md Step 4) ----------
 
     def ask_llm_stream(self, query):
         """Yield reply text as Ollama produces it, so speech can start early and
@@ -293,14 +244,13 @@ class Vortex:
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.memory.recent(HISTORY_TURNS)
         reply = ''
         try:
-            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m',
-                                 options={'num_predict': LLM_MAX_TOKENS})
+            stream = self.llm.chat_stream(messages)
         except Exception as e:
             self.log(f'LLM error: {e}')
             yield 'Sorry Boss, my reasoning engine is currently offline.'
             return
         try:
-            for token in self._poll_stream(stream):
+            for token in stream:
                 reply += token
                 yield token
         except Exception as e:
@@ -308,8 +258,6 @@ class Vortex:
             if not reply:
                 yield 'Sorry Boss, my reasoning engine is currently offline.'
         finally:
-            with contextlib.suppress(Exception):
-                stream.close()
             if reply:
                 self.memory.add_turn('assistant', reply)
 
@@ -320,19 +268,15 @@ class Vortex:
         in, tokens out, stoppable mid-generation exactly like ask_llm_stream."""
         messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_content}]
         try:
-            stream = ollama.chat(model=MODEL, messages=messages, stream=True, keep_alive='30m',
-                                 options={'num_predict': LLM_MAX_TOKENS})
+            stream = self.llm.chat_stream(messages)
         except Exception as e:
             self.log(f'Document LLM error: {e}')
             yield 'Sorry Boss, my reasoning engine is currently offline.'
             return
         try:
-            yield from self._poll_stream(stream)
+            yield from stream
         except Exception as e:
             self.log(f'Document LLM stream error: {e}')
-        finally:
-            with contextlib.suppress(Exception):
-                stream.close()
 
     def summarize_document(self, name):
         """Whole-document (truncated) summary - summarization wants the whole
