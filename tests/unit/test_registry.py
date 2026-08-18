@@ -1,10 +1,13 @@
-"""Unit tests for the capability registry (src/vortex/main.py's
-_build_registry/execute) added 2026-08-16 (Phase 2). Every existing voice
-command from before this refactor is asserted here to still route to the
-exact same action, proving the if/elif-chain -> registry rewrite changed
-only HOW dispatch happens, not WHAT any command does. New file-ops/search
-commands are asserted alongside them since they register through the exact
-same mechanism, not as separate, disconnected work.
+"""Unit tests for command dispatch (src/vortex/main.py's execute(), which as
+of docs/REFACTOR_PLAN.md Step 6 routes through core/intent_router.route()
+for classification and a core/capability_registry.CapabilityRegistry for
+dispatch) added 2026-08-16 (Phase 2), still exercising execute() end-to-end.
+Every existing voice command from before this refactor is asserted here to
+still route to the exact same action, proving each successive rewrite
+(if/elif chain -> flat registry list -> intent router + capability
+registry) changed only HOW dispatch happens, not WHAT any command does. New
+file-ops/search commands are asserted alongside them since they register
+through the exact same mechanism, not as separate, disconnected work.
 
 Constructs a real Vortex() (no hardware touched at construction - see
 test_barge_in.py's vortex_instance fixture for why: WakeDetector loads the
@@ -22,6 +25,7 @@ import pytest
 sys.path.insert(0, __file__.rsplit('tests', 1)[0] + 'src')
 
 from vortex.main import Vortex
+from vortex.core import intent_router
 
 
 @pytest.fixture
@@ -224,23 +228,37 @@ def test_empty_command_does_not_crash(v):
 
 
 # ---------- registry structure itself ----------
+# docs/REFACTOR_PLAN.md Step 6: classification (intent_router.ALL_INTENT_TYPES,
+# a tuple of Intent dataclasses, each self-describing via its
+# name/destructive/description ClassVars) and dispatch (v._registry, a
+# CapabilityRegistry) replaced the old flat list-of-dicts `_registry` these
+# tests used to inspect directly - same structural guarantees (required
+# shape, unique names, full dispatch coverage), asserted against the new
+# shape instead.
 
-def test_registry_entries_have_required_shape(v):
-    for entry in v._registry:
-        assert set(entry) == {'name', 'matcher', 'handler', 'destructive', 'description'}
-        assert callable(entry['matcher'])
-        assert callable(entry['handler'])
-        assert isinstance(entry['destructive'], bool)
-        assert isinstance(entry['description'], str) and entry['description']
+def test_intent_types_have_required_metadata():
+    for t in intent_router.ALL_INTENT_TYPES:
+        assert isinstance(t.name, str) and t.name
+        assert isinstance(t.destructive, bool)
+        assert isinstance(t.description, str) and t.description
 
 
-def test_registry_names_are_unique(v):
-    names = [entry['name'] for entry in v._registry]
+def test_intent_type_names_are_unique():
+    names = [t.name for t in intent_router.ALL_INTENT_TYPES]
     assert len(names) == len(set(names))
 
 
-def test_new_file_commands_are_registered(v):
-    names = {entry['name'] for entry in v._registry}
+def test_every_routable_intent_type_has_a_capability_registry_handler(v):
+    # Unhandled never reaches the registry - execute() routes it straight to
+    # the LLM fallback (see main.py's execute()) - so it's the one type
+    # deliberately excluded here, same as CapabilityRegistry.__init__'s own
+    # coverage assertion.
+    routable = set(intent_router.ALL_INTENT_TYPES) - {intent_router.Unhandled}
+    assert routable <= set(v._registry._handlers)
+
+
+def test_new_file_commands_are_registered():
+    names = {t.name for t in intent_router.ALL_INTENT_TYPES}
     assert {'list_files', 'search_files', 'delete_file_prompt', 'move_file_prompt',
             'copy_file', 'rename_file_prompt'} <= names
 
