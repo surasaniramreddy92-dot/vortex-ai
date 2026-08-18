@@ -23,7 +23,7 @@ Move/copy/rename never silently overwrite an existing file at the
 destination - they raise FileExistsError instead (a builtin, so callers that
 already handle OSError catch it for free; FileExistsError is a subclass).
 This is deliberately a structural guard, not just a confirmation prompt: the
-voice layer (main.py) additionally gates delete/move/rename behind
+voice layer (app.py) additionally gates delete/move/rename behind
 awaiting_confirmation, but copy is immediate since it can't destroy or
 rename anything that already existed - the only way it could surprise
 someone is by overwriting, and that path is closed off here instead.
@@ -102,8 +102,8 @@ def list_files(dir_name=None, limit=20):
     {'name': filename, 'location': the folder's spoken name (e.g.
     'Desktop')} - not just a bare filename - so a caller combining multiple
     folders can say *where* each file is instead of a location-less list a
-    listener has no way to act on (see main.py's h_list_files: this is
-    spoken, not displayed, so "report.pdf" alone doesn't tell you anything
+    listener has no way to act on (see core/capability_registry.py's
+    _list_files: this is spoken, not displayed, so "report.pdf" alone doesn't tell you anything
     you can do with it, but "report.pdf, in Desktop" does)."""
     if dir_name:
         d = resolve_dir(dir_name)

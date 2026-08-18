@@ -174,7 +174,7 @@ class TextToSpeech:
         return self._offline_piper_voice
 
     def ensure_offline_ready(self):
-        """Explicit warm-up hook (called from main.py's _warm_up_models, off the
+        """Explicit warm-up hook (called from app.py's _warm_up_models, off the
         critical path, while the network is presumably still up): downloads
         the piper voice if it isn't cached yet, then loads it. If the first
         load attempt happened during _synth's fallback instead, that would be

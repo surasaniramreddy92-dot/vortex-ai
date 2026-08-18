@@ -2,10 +2,10 @@
 
 Extracted verbatim from Vortex.__init__'s two threading.Event attributes
 (docs/REFACTOR_PLAN.md Step 3) - same two Events, same semantics, just
-grouped into one small object that wake.py, tts.py, stt.py, session.py and
-main.py's remaining LLM-streaming code (_poll_stream, ask_llm_stream) can
-all share a reference to, instead of each reaching into Vortex's own
-attributes directly.
+grouped into one small object that wake.py, tts.py, stt.py, session.py,
+llm/ollama_provider.py's token-polling, and app.py's ask_llm_stream can all
+share a reference to, instead of each reaching into Vortex's own attributes
+directly.
 
 No behavior lives here on purpose - every call site still does
 `barge_in.speaking.is_set()` / `.set()` / `.clear()` exactly as it did when

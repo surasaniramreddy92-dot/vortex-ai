@@ -16,7 +16,7 @@ Step 3). Preserves, verbatim:
 Dependencies (capture_command, execute, speak, greet, warm_up, and the
 awaiting-confirmation clear) are injected as callables rather than importing
 Vortex directly, so this module doesn't depend on the god-object it was
-extracted from. main.py wires these to `self.<name>` lookups on the Vortex
+extracted from. app.py wires these to `self.<name>` lookups on the Vortex
 instance at call time (not pre-bound method references captured once) so
 that instance-level monkeypatching - e.g. tools/test_barge_in.py's worker-
 dispatch scenario, which overrides `v.speak`/`v.capture_command`/`v.execute`/

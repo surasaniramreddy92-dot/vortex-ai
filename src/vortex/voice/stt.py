@@ -31,7 +31,7 @@ class SpeechToText:
     the interface can wrap this later without disturbing the fix.
 
     stop_wake_stream/recover_wake_stream are injected callables (bound to
-    wake.py's WakeDetector at composition time in main.py) rather than a
+    wake.py's WakeDetector at composition time in app.py) rather than a
     direct import of wake.py, so this module doesn't need to know anything
     about WakeDetector's internals - just "stand the wake stream down" and
     "bring it back up".
@@ -196,7 +196,7 @@ class SpeechToText:
         return self._offline_model
 
     def ensure_offline_ready(self):
-        """Explicit warm-up hook (called from main.py's _warm_up_models, off the
+        """Explicit warm-up hook (called from app.py's _warm_up_models, off the
         critical path, while the network is presumably still up) so the model
         is downloaded and cached *before* it's ever actually needed - if the
         first attempt to load it happened during capture_command's fallback,

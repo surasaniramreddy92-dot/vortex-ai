@@ -19,7 +19,8 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
-from vortex.main import Vortex, MAX_CHUNK
+from vortex.app import Vortex
+from vortex.voice.tts import MAX_CHUNK
 
 LIVE = '--live' in sys.argv
 failures = []
