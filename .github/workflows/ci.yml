@@ -27,6 +27,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[all,voice-offline,dev]"
 
+      - name: Download openWakeWord's base preprocessing models
+        # Separate from VORTEX's own committed hey_vortex.onnx (tools/wakeword/
+        # models/) - these are openwakeword's own melspectrogram/embedding
+        # ONNX models, fetched from its GitHub release assets. Not bundled in
+        # the pip wheel; a fresh install (this runner, or anyone else's first
+        # `pip install -e .`) needs this one-time step before constructing any
+        # real WakeDetector - which test_registry.py/test_file_confirmation.py/
+        # tests/integration's fixtures all do, even though none of them ever
+        # open a real mic stream.
+        run: python -c "from openwakeword.utils import download_models; download_models()"
+
       - name: Lint (ruff)
         run: ruff check src tests
 
