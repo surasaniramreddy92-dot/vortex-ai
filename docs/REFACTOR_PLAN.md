@@ -2,14 +2,17 @@
 
 Companion to `docs/CURRENT_STATE.md` (what exists) and `docs/ARCHITECTURE.md`
 (target design). This is the *sequence* — what changes, in what order, and
-the exit criteria for each step. Steps 0-4 are done (see each step's own
+the exit criteria for each step. Steps 0-5 are done (see each step's own
 "done" note for what actually landed and any judgment calls made along the
 way); the refactor was on hold between Step 3 and Step 4 while capability
 work (offline STT/TTS fallback, file ops, hybrid RAG search, OCR document
 intelligence, screen reading, popups) shipped directly on top of `main.py`
-instead - none of that is reflected in Steps 5-10's mapping tables below,
-which still describe the codebase as it looked when this plan was written.
-Each step from here still waits for explicit sign-off before starting.
+instead. Steps 6-10's mapping tables below still describe the codebase as it
+looked when this plan was written - Step 6 in particular will need to
+account for `awaiting_confirmation`/`handle_confirmation` now covering
+`delete_file`/`move_file`/`rename_file` too, not just the three OS-automation
+actions the original table names. Each step from here still waits for
+explicit sign-off before starting.
 
 **Hard rule for every step below:** run whatever tests exist, confirm no
 regression in the "preserve these" feature list, report exactly which files
@@ -175,7 +178,38 @@ message still fires correctly when Ollama is down.
 
 ---
 
-## Step 5 — Extract OS automation behind a platform adapter
+## Step 5 — Extract OS automation behind a platform adapter (done, 2026-08-18)
+
+Landed as planned, plus both known gaps pulled forward rather than left for
+later (per your go-ahead when this step started): `protected_processes` grew
+from 12 to 19 entries (added `svchost.exe`, `wininit.exe`, `smss.exe`,
+`spoolsv.exe`, `registry`, `fontdrvhost.exe`, `msmpeng.exe` - the
+system-critical processes `CURRENT_STATE.md` §6 named as missing), still as
+a denylist rather than the inverted allowlist-of-safe-to-close
+`CURRENT_STATE.md` offered as an alternative - inverting it would make
+`close_all_apps` refuse anything it doesn't already recognize by name, a
+much bigger behavior change than this step's scope. `lock_system` got a
+`PlatformAdapter.lock()` method too, even though the original mapping below
+only named shutdown/restart - it's the same category of platform-specific
+power-state call, and leaving it inline while its two siblings moved would
+have been inconsistent. `handle_confirmation`'s `'yes' in cmd` substring
+bug (`CURRENT_STATE.md` §6, originally slated for Step 6's
+`core/policy_engine.py`) was fixed here instead via a small
+`_is_affirmative()` helper - whole-word matching, any negative word wins
+over an affirmative one - rather than waiting for Step 6's full
+intent-routing machinery just to close a live safety gap; it'll move again,
+unchanged, into `core/policy_engine.py` when Step 6 actually happens.
+`main.py`'s `psutil` and `subprocess` imports came out entirely - every call
+site that used them moved into `tools/system/*.py` /
+`platform/windows/*.py`. Verified: full `pytest` suite (167 tests) green,
+zero regressions; `_is_affirmative()` checked against the exact flagged bug
+phrase plus 9 others; a real `Vortex()` opening and closing a real Notepad
+process end-to-end through the new wiring. Shutdown/restart/close-all/lock
+were **not** live-tested (disruptive to a running session) - verified by
+code-path reading instead, since each is a verbatim port with no behavior
+change beyond the two gaps above.
+
+## Step 5 (original plan, preserved below for reference) — Extract OS automation behind a platform adapter
 
 **Goal:** this is the step that actually addresses the "platform-independent
 architecture" requirement — separate *what* VORTEX wants to do
