@@ -39,7 +39,7 @@ def _bool_env(name, default):
 # Mirrors VortexConfig.ocr_enabled/ocr_language name-for-name and default-for-
 # default (same env-var-name duplication pattern rag.py already uses for its
 # own Postgres/Qdrant/embed-model constants - see rag.py's module docstring -
-# since neither module is wired to take a VortexConfig instance from main.py
+# since neither module is wired to take a VortexConfig instance from app.py
 # yet; this stays a plain module-level constant like rag.py's, not an import
 # of config.py, to match that existing precedent rather than mix patterns).
 OCR_ENABLED = _bool_env('VORTEX_OCR_ENABLED', True)

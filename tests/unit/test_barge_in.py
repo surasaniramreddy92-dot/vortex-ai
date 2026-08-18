@@ -214,7 +214,7 @@ def vortex_instance():
     """A real Vortex() - no hardware touched at construction or by _worker()
     (WakeDetector.start(), which opens the mic InputStream, is only called
     from Vortex.start(), never from the worker loop)."""
-    from vortex.main import Vortex
+    from vortex.app import Vortex
     v = Vortex()
     yield v
     v.memory.close()

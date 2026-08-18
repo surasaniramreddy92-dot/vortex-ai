@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, __file__.rsplit('tests', 1)[0] + 'src')
 
-from vortex.main import Vortex
+from vortex.app import Vortex
 from vortex.core import intent_router
 
 

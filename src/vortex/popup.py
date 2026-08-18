@@ -7,7 +7,7 @@ Tk() root - never sharing widgets or state with any other thread. Tkinter is
 not safe to drive from multiple threads sharing one Tk instance, but a
 thread that owns its own Tk() root end-to-end (create it, populate it, run
 its mainloop, all in that one thread) is a standard, working pattern on
-Windows. This keeps the popup non-blocking: main.py's worker thread starts
+Windows. This keeps the popup non-blocking: VORTEX's worker thread starts
 it and moves straight on to speaking, instead of freezing until the window
 is closed.
 """
