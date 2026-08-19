@@ -88,6 +88,22 @@ class ReadScreen:
 
 
 @dataclass(frozen=True)
+class CheckEmail:
+    name: ClassVar[str] = 'check_email'
+    destructive: ClassVar[bool] = False
+    description: ClassVar[str] = 'Summarize unread email.'
+
+
+@dataclass(frozen=True)
+class ReplyToEmailPrompt:
+    target: str
+    instruction: str
+    name: ClassVar[str] = 'reply_to_email_prompt'
+    destructive: ClassVar[bool] = True
+    description: ClassVar[str] = 'Draft a reply to a matching unread email and prompt to send it.'
+
+
+@dataclass(frozen=True)
 class PlayYoutube:
     query: str
     name: ClassVar[str] = 'youtube'
@@ -225,9 +241,10 @@ class Unhandled:
 # second, separate list that could drift from the real routing order.
 ALL_INTENT_TYPES = (
     ShutdownVortex, SpeakTime, SpeakDate, CloseAllPrompt, RestartPrompt, ShutdownPrompt,
-    Lock, CloseBrowser, ReadPage, ReadScreen, PlayYoutube, SearchFiles, WebSearch, Browse,
-    Click, ListFiles, DeleteFilePrompt, MoveFilePrompt, CopyFile, RenameFilePrompt,
-    CloseApp, OpenTarget, DocumentQuestion, SummarizeDocument, ReadDocument, Unhandled,
+    Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail, ReplyToEmailPrompt, PlayYoutube,
+    SearchFiles, WebSearch, Browse, Click, ListFiles, DeleteFilePrompt, MoveFilePrompt,
+    CopyFile, RenameFilePrompt, CloseApp, OpenTarget, DocumentQuestion, SummarizeDocument,
+    ReadDocument, Unhandled,
 )
 
 _YOUTUBE_PATTERNS = [
@@ -241,6 +258,11 @@ _DATE = re.compile(r'\bdate\b')
 _LOCK = re.compile(r'\block\b.*\b(?:system|computer|screen|pc)\b')
 _READ_PAGE = re.compile(r"(?:read|what'?s on) (?:the |this )?page")
 _READ_SCREEN = re.compile(r"(?:read|what'?s on) (?:my |the |this )?screen")
+# Checked before read_document's broad "read (?:me )?(.+)" catch-all below,
+# same reason read_page/read_screen are - otherwise "read my email" would be
+# interpreted as "find a document named my email".
+_CHECK_EMAIL = re.compile(r"(?:check|read|what'?s in) (?:my )?(?:emails?|inbox|mail)$")
+_REPLY_EMAIL = re.compile(r'reply to (.+?) (?:and say|saying|with) (.+)')
 _SEARCH_FILES = re.compile(r'(?:find|search for) files?(?: named| called| containing)? (.+)')
 _WEB_SEARCH = re.compile(r'(?:search(?: the web)? for|google) (.+)')
 _BROWSE = re.compile(r'(?:go to|browse to|browse) (.+)')
@@ -285,6 +307,16 @@ def route(cmd):
     # would be interpreted as "find a document named my screen".
     if _READ_SCREEN.search(cmd):
         return ReadScreen()
+    # Same reasoning as read_screen above - "check my email"/"read my email"
+    # must not fall through to read_document's catch-all either. reply_email
+    # is checked first since "reply to X saying Y" never starts with
+    # "check"/"read"/"what's in", so order between the two doesn't matter,
+    # but keeping them adjacent keeps the email-specific patterns together.
+    m = _REPLY_EMAIL.match(cmd)
+    if m:
+        return ReplyToEmailPrompt(target=m.group(1).strip(), instruction=m.group(2).strip())
+    if _CHECK_EMAIL.match(cmd):
+        return CheckEmail()
     # YouTube search-and-play is checked before the generic "open (.+)"
     # pattern below, which used to swallow phrases like "open youtube and
     # play X" whole and fall through to a dumb literal-phrase web search.

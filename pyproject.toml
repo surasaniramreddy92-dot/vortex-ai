@@ -117,6 +117,17 @@ wakeword-training = [
     "imageio-ffmpeg==0.6.0",
     "scikit-learn==1.9.0",
 ]
+# Gmail-backed email: check/summarize unread mail and draft+send replies,
+# gated behind the same awaiting_confirmation yes/no flow every other
+# destructive/consequential action already uses - VORTEX drafts, you approve,
+# nothing sends without an explicit "yes". Requires a one-time OAuth consent
+# in a real browser (not something this package can do headlessly) - see
+# README's mail setup section for the Google Cloud Console steps.
+mail = [
+    "google-api-python-client==2.198.0",
+    "google-auth-oauthlib==1.4.0",
+    "google-auth-httplib2==0.4.1",
+]
 dev = [
     "pytest==9.1.1",
     # docs/REFACTOR_PLAN.md Step 9: CI lint/type-check. ruff is scoped to
@@ -132,7 +143,7 @@ dev = [
 # without the offline STT/TTS fallback actually doing anything on a network
 # outage. Install it explicitly (`pip install -e .[voice-offline]`) to get that.
 all = [
-    "vortex-ai[voice,windows,documents,browser,rag]",
+    "vortex-ai[voice,windows,documents,browser,rag,mail]",
 ]
 
 [tool.setuptools.packages.find]
