@@ -18,3 +18,16 @@ class LLMProvider(ABC):
         signal (barge-in / shutdown) fires, not just when the underlying
         stream naturally ends."""
         raise NotImplementedError
+
+    @abstractmethod
+    def chat_with_tools(self, messages, tools):
+        """Non-streaming: a tool call is a single structured decision, not
+        something meaningful to stream token-by-token. Returns a dict with
+        at least 'content' (str, possibly empty) and 'tool_calls' (a list,
+        possibly empty, of {'name': str, 'arguments': dict}).
+
+        See config.py's llm_tool_calling_enabled docstring before assuming
+        this is reliable enough to act on unconditionally - it is real,
+        working infrastructure, not a placeholder, but is off by default for
+        a concrete, tested reason."""
+        raise NotImplementedError

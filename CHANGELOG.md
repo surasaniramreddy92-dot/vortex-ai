@@ -6,6 +6,86 @@ this file is the fast way to see what changed and when without reading full
 commit diffs. Phase-by-phase status (not date-based) lives in
 `IMPLEMENTED.md`; this file is chronological.
 
+## 2026-08-19 (continued into 2026-08-20)
+
+### Added — security, memory retrieval, tool-calling (in that priority order, per direct user request to finish all three as fast as honestly possible)
+
+- **Dependency vulnerability scanning** (`26ae19d`, fixed `046b6dc`): `pip-audit`
+  added as a CI step and to the `dev` extra. Found and fixed real CVEs:
+  Pillow 12.2.0 → 12.3.0 (15 CVEs, both the `windows` and `documents`
+  extras). The new step itself then failed on a genuinely fresh CI runner
+  (not locally, where the dev venv's setuptools was already newer) - 7 CVEs
+  in CI's own bundled setuptools 65.5.0 - fixed by explicitly upgrading
+  `pip`/`setuptools` in the install step, same category of "only a real
+  fresh runner catches this" bug as the four portability fixes on
+  2026-08-18.
+- **Conversation memory retrieval** (`3ddc87e`) - closes the exact gap
+  `IMPLEMENTED.md`'s Phase 5 row had flagged since 2026-08-16
+  ("no retrieval over it, just chronological recall"). `rag.py`'s
+  `RagStore` gained a second Qdrant collection (`vortex_conversation_turns`)
+  indexed via a background daemon thread as each turn is added
+  (`app.py`'s `_index_turn_async` - deliberately off the `ask_llm_stream`
+  critical path, since that same thread feeds TTS and a synchronous embed
+  call would add real latency to a live barge-in-sensitive conversation).
+  "Do you remember X" / "what did I tell you about X" now retrieves the
+  most relevant past turns (dense-only search, no BM25/rerank - short
+  conversational text doesn't need document retrieval's hybrid pipeline)
+  and answers via the LLM. **Live end-to-end verified**, not just mocked:
+  told VORTEX "my favorite programming language is Rust because of its
+  safety guarantees," waited for the background index, then asked "do you
+  remember my favorite programming language" and got back a real, correct
+  Ollama answer citing Rust's safety guarantees. 8 new unit tests
+  (`test_memory_retrieval.py`) plus 4 more in `test_registry.py` covering
+  `recall_memory`'s three degrade-gracefully paths (`rag` unavailable,
+  search failure, no relevant turns found).
+- **Structured tool-calling infrastructure** (Phase 4 gap, uncommitted as of
+  this entry - see below) - `src/vortex/llm/tools.py` (4 safe non-destructive
+  tool schemas: `open_app`, `web_search`, `get_time`, `get_date`),
+  `LLMProvider.chat_with_tools`/`OllamaProvider.chat_with_tools`, and
+  `Vortex._try_tool_call` (only reached when the deterministic regex router
+  found nothing). **Live-tested against every model on this machine before
+  deciding how to ship it:** `llama3:latest` and `phi:latest` both reject
+  Ollama's `tools` parameter outright (HTTP 400, "does not support tools");
+  `llama3.2:1b` (the only one that accepts it) hallucinated a tool call for
+  a plain unrelated question ("what is the capital of France" → called
+  `get_date`) and, on topically-right phrases, echoed the parameter's own
+  JSON schema back instead of the extracted value. Real course-correction,
+  not a shipped feature: rather than enable this, it lands **off by
+  default** (`VortexConfig.llm_tool_calling_enabled`,
+  `VORTEX_LLM_TOOL_CALLING_ENABLED=false`), with `tool_call_to_intent()`
+  defensively failing closed (returns `None`, dispatches nothing) on any
+  malformed argument shape - confirmed live against the exact
+  schema-echoed-back failure mode observed above. 19 new unit tests
+  (`test_tools.py`, `test_registry.py`) cover the mapping/fail-closed logic
+  and `execute()`'s flag-off/flag-on/malformed-call/no-call/request-failure
+  paths.
+
+### Also this stretch (2026-08-19)
+
+- **Gmail check/reply** (`0ac1804`) - first slice of Communication
+  (auto-reply, direct user request, scoped to email only, voice-triggered
+  only). See `IMPLEMENTED.md`'s Communication (Email) row for the full
+  writeup; not yet live-verified against a real Gmail account since that
+  needs a one-time OAuth consent only the account owner can do.
+- **Documentation drift fixed**: `README.md`/`IMPLEMENTED.md`/
+  `docs/ARCHITECTURE.md`/`docs/LEARNING_GUIDE.md` had fallen behind the
+  2026-08-18 refactor completion (still describing `main.py` as a
+  god-object, "no tests/CI" language, a stale Phase 0 status, a missing
+  Phase 8 row). Fixed, plus an explicit disambiguation callout added to
+  both README and IMPLEMENTED distinguishing `docs/REFACTOR_PLAN.md`'s
+  internal Steps 0-10 (code-organization refactor, fully done) from the
+  master feature roadmap's Phase 0-16 table (still mostly Partial, for
+  real, specific reasons). Phases 2, 3, and 7 bumped from Partial to
+  **Implemented (v1)** based on a genuine re-assessment against live
+  evidence already gathered this session, not a relabeling exercise.
+- **Real Ollama server outage fixed** (the user's actual running instance,
+  not a code bug): a zombie old Ollama install (v0.18.2 at `E:\Ollama`)
+  never got its server ready and blocked the correct, newer auto-updated
+  install (v0.32.14) from starting. Root cause of it recurring on every
+  reboot: the Windows Startup shortcut pointed at the old install. Fixed by
+  killing the stuck process, starting the correct install, and repointing
+  the shortcut.
+
 ## 2026-08-17 (continued into 2026-08-18)
 
 ### Fixed (severe regression - direct user report: "it sometimes speaks without me calling for it")

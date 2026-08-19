@@ -27,6 +27,23 @@ class OllamaProvider(LLMProvider):
         self.is_running = is_running
         self.keep_alive = keep_alive
 
+    def chat_with_tools(self, messages, tools):
+        """Non-streaming - a tool call is one structured decision, not
+        something to stream token-by-token. No keep_alive/num_predict
+        options here on purpose: tool-calling responses are short structured
+        decisions, not the long free-form replies num_predict was tuned
+        against (see config.py's llm_max_tokens docstring - that tuning is
+        specific to conversational answers, not this path)."""
+        resp = ollama.chat(model=self.model, messages=messages, tools=tools)
+        msg = resp['message']
+        return {
+            'content': msg.get('content') or '',
+            'tool_calls': [
+                {'name': tc['function']['name'], 'arguments': tc['function']['arguments']}
+                for tc in (msg.get('tool_calls') or [])
+            ],
+        }
+
     def chat_stream(self, messages):
         # Deliberately not a generator function itself: ollama.chat(...) runs
         # synchronously here, so a connection failure raises immediately to

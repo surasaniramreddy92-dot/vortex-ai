@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, __file__.rsplit('tests', 1)[0] + 'src')
 
+from vortex import app as app_module
 from vortex.app import Vortex
 from vortex.core import intent_router
 
@@ -472,3 +473,62 @@ def test_recall_memory_with_results_answers_via_the_llm():
     inst.recall_memory('what language do I like')
     assert any(s.startswith('ANSWER[') for s in inst.spoken)
     inst.memory.close()
+
+
+# ---------- Vortex.execute()'s tool-calling fallback (Phase 4 infrastructure,
+# 2026-08-19) - config.py's llm_tool_calling_enabled defaults False, so most
+# of these flip app_module.LLM_TOOL_CALLING_ENABLED (the module-level
+# constant execute() actually reads) rather than touching real config/env.
+# See llm/tools.py and config.py's llm_tool_calling_enabled docstring for the
+# live-tested reason this stays off by default. ----------
+
+UNMATCHED_CMD = 'what is the capital of France'  # matches no intent_router pattern
+
+
+def test_tool_calling_disabled_by_default_never_calls_llm_tools(v, monkeypatch):
+    monkeypatch.setattr(app_module, 'LLM_TOOL_CALLING_ENABLED', False)
+
+    def boom(messages, tools):
+        raise AssertionError('chat_with_tools must not be called when the flag is off')
+    v.llm = type('L', (), {'chat_with_tools': staticmethod(boom)})()
+    v.execute(UNMATCHED_CMD)
+    assert v.calls == [('speak_stream', ([f'LLM:{UNMATCHED_CMD}'],), {})]
+
+
+def test_tool_calling_enabled_with_well_formed_call_dispatches_intent(v, monkeypatch):
+    monkeypatch.setattr(app_module, 'LLM_TOOL_CALLING_ENABLED', True)
+    v.llm = type('L', (), {'chat_with_tools': staticmethod(
+        lambda messages, tools: {'content': '', 'tool_calls': [
+            {'name': 'open_app', 'arguments': {'target': 'chrome'}}]})})()
+    v.execute('can you pull up chrome for me')
+    last_call(v, 'open_target')
+    assert not any(c[0] == 'speak_stream' for c in v.calls)
+
+
+def test_tool_calling_enabled_with_malformed_arguments_falls_through_to_llm(v, monkeypatch):
+    """The exact live-observed failure mode: the model calls a real tool but
+    echoes the parameter schema back instead of extracting a value."""
+    monkeypatch.setattr(app_module, 'LLM_TOOL_CALLING_ENABLED', True)
+    v.llm = type('L', (), {'chat_with_tools': staticmethod(
+        lambda messages, tools: {'content': '', 'tool_calls': [
+            {'name': 'open_app', 'arguments': {'type': 'string', 'description': 'x'}}]})})()
+    v.execute(UNMATCHED_CMD)
+    assert v.calls == [('speak_stream', ([f'LLM:{UNMATCHED_CMD}'],), {})]
+
+
+def test_tool_calling_enabled_with_no_tool_calls_falls_through_to_llm(v, monkeypatch):
+    monkeypatch.setattr(app_module, 'LLM_TOOL_CALLING_ENABLED', True)
+    v.llm = type('L', (), {'chat_with_tools': staticmethod(
+        lambda messages, tools: {'content': 'just an answer', 'tool_calls': []})})()
+    v.execute(UNMATCHED_CMD)
+    assert v.calls == [('speak_stream', ([f'LLM:{UNMATCHED_CMD}'],), {})]
+
+
+def test_tool_calling_enabled_request_failure_falls_through_gracefully(v, monkeypatch):
+    monkeypatch.setattr(app_module, 'LLM_TOOL_CALLING_ENABLED', True)
+
+    def boom(messages, tools):
+        raise RuntimeError('ollama connection refused')
+    v.llm = type('L', (), {'chat_with_tools': staticmethod(boom)})()
+    v.execute(UNMATCHED_CMD)
+    assert v.calls == [('speak_stream', ([f'LLM:{UNMATCHED_CMD}'],), {})]

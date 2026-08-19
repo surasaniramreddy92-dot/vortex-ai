@@ -29,6 +29,7 @@ from .voice.tts import TextToSpeech
 from .voice.stt import SpeechToText
 from .voice.session import Session
 from .llm.ollama_provider import OllamaProvider
+from .llm.tools import TOOL_SCHEMAS, tool_call_to_intent
 from .platform.windows.power import WindowsPlatformAdapter
 from .platform.windows.apps import NATIVE_APPS, WEB_APPS
 from .platform.windows.protected_processes import PROTECTED_PROCESSES
@@ -110,6 +111,7 @@ SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-bac
 GMAIL_CREDENTIALS_PATH = _cfg.gmail_credentials_path
 GMAIL_TOKEN_PATH = _cfg.gmail_token_path
 MAIL_MAX_RESULTS = _cfg.mail_max_results
+LLM_TOOL_CALLING_ENABLED = _cfg.llm_tool_calling_enabled
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 try:
     pygame.mixer.init()
@@ -548,12 +550,35 @@ class Vortex:
             return
         intent = intent_router.route(cmd)
         if isinstance(intent, intent_router.Unhandled):
-            # No capability matched - fall through to the LLM. Not a
-            # registered capability itself: this is the default reasoning
-            # path, not a capability with its own trigger phrase.
+            if LLM_TOOL_CALLING_ENABLED:
+                tool_intent = self._try_tool_call(cmd)
+                if tool_intent is not None:
+                    self._registry.dispatch(tool_intent)
+                    return
+            # No capability matched (regex or tool-call) - fall through to
+            # the LLM. Not a registered capability itself: this is the
+            # default reasoning path, not a capability with its own trigger
+            # phrase.
             self.speak_stream(self.ask_llm_stream(cmd))
             return
         self._registry.dispatch(intent)
+
+    def _try_tool_call(self, cmd):
+        """Only reached when config.py's llm_tool_calling_enabled is
+        explicitly turned on - see its docstring for why that's off by
+        default. Returns a mapped Intent if the model chose to call a known
+        tool with well-formed arguments, else None (falls through to
+        ask_llm_stream unchanged, same as if this whole block didn't run)."""
+        try:
+            resp = self.llm.chat_with_tools([{'role': 'user', 'content': cmd}], TOOL_SCHEMAS)
+        except Exception as e:
+            self.log(f'Tool-calling request failed: {e}')
+            return None
+        for call in resp['tool_calls']:
+            mapped = tool_call_to_intent(call['name'], call['arguments'])
+            if mapped is not None:
+                return mapped
+        return None
 
     # ---------- wake / dispatch (voice/wake.py, voice/session.py own the actual logic) ----------
 
