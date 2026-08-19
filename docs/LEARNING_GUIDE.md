@@ -389,8 +389,26 @@ give it a JSON schema (or Pydantic model) describing exactly the shape of a
 valid tool call, and the model is constrained (or strongly guided) to
 produce that shape. This turns "hope the model's phrasing is parseable" into
 "validate the model's structured output against a schema" — a much smaller
-failure surface. VORTEX doesn't do this yet; today's LLM path is pure prose
-in, prose out.
+failure surface, in theory. VORTEX built this (`src/vortex/llm/tools.py`,
+Ollama's native `tools` parameter, 2026-08-20) and then, on real evidence,
+didn't turn it on: the schema constrains what a *well-behaved* model
+produces, but doesn't stop a small model from ignoring the schema's actual
+values. Live-tested against every model available locally, `llama3:latest`
+and `phi:latest` simply reject the `tools` parameter outright (HTTP 400,
+not a fallback case — a hard capability rejection you have to check for
+before assuming any tool-calling API is usable at all). `llama3.2:1b` (the
+default model, and the only one that accepted it) called the schema-valid
+`get_date` tool for a plain unrelated question, and on calls that were at
+least topically right, echoed the parameter's own JSON schema back as the
+"argument value" instead of extracting one — a failure a schema alone can't
+catch, since the shape is technically well-formed. This is why VORTEX's
+mapper (`tool_call_to_intent`) still does its own defensive validation of
+argument *values*, not just trusting "the model called a real tool" —
+structured outputs narrow the failure surface, they don't close it, and a
+small enough model can still hand you well-typed garbage. See
+`IMPLEMENTED.md`'s Phase 4 row for the full test results and why this stays
+off by default (`VORTEX_LLM_TOOL_CALLING_ENABLED=false`) until a
+larger/more tool-capable local model is available.
 
 **Local-first inference (Ollama):** running `llama3.2:1b` locally means no
 per-token cost, no data leaving the machine, and no dependency on a remote

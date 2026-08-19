@@ -188,6 +188,7 @@ While VORTEX is talking, saying "Hey Vortex" again cuts it off mid-sentence
 | `VORTEX_GMAIL_CREDENTIALS` | `<VORTEX_HOME>/gmail_credentials.json` | OAuth client credentials you download from Google Cloud Console (see "Setting up Gmail") |
 | `VORTEX_GMAIL_TOKEN` | `<VORTEX_HOME>/data/gmail_token.json` | cached OAuth token after the one-time browser consent, auto-refreshed after that |
 | `VORTEX_MAIL_MAX_RESULTS` | `5` | how many unread emails "check my email" summarizes at once |
+| `VORTEX_LLM_TOOL_CALLING_ENABLED` | `false` | structured tool-calling for unmatched commands (see `IMPLEMENTED.md`'s Phase 4 row) — off by default: live-tested to be unreliable on every model currently on this machine (hallucinated/malformed calls), real infrastructure but not yet safe to enable |
 
 ## Architecture today
 

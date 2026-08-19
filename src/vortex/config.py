@@ -152,6 +152,24 @@ class VortexConfig:
     # question: every single one completed with a proper sentence ending
     # (7-19 words), none cut off mid-thought.
     llm_max_tokens: int = field(default_factory=lambda: _int_env('VORTEX_LLM_MAX_TOKENS', 32))
+    # Structured tool-calling (Phase 4 gap) - default OFF, not a placeholder
+    # left off out of caution but a real, empirically-justified decision.
+    # Tested live 2026-08-19 against every model on this machine: llama3:latest
+    # and phi:latest both reject Ollama's tools parameter outright ("does not
+    # support tools", HTTP 400) - only llama3.2:1b (the default model) accepts
+    # it at all, and it's unreliable in a concrete, harmful way: it called the
+    # test open_app tool for "what is the capital of France" - a plain
+    # general-knowledge question with no relation to opening anything - and
+    # mangled the arguments structure (echoed the JSON schema itself back
+    # instead of the extracted value) on the calls that were at least
+    # topically right. Enabling this by default would make VORTEX worse, not
+    # better - a real regression on ordinary questions, not just an unproven
+    # feature. The infrastructure (llm/tools.py) is real and tested, ready
+    # for a bigger tool-calling-capable model (e.g. llama3.1:8b, qwen2.5:7b)
+    # or a future llama3.2:1b improvement - flip this on explicitly once
+    # that's actually true, not by default until then.
+    llm_tool_calling_enabled: bool = field(
+        default_factory=lambda: _bool_env('VORTEX_LLM_TOOL_CALLING_ENABLED', False))
     # "Short spoken sentences" (plural, no explicit limit) was not reliably
     # followed by this model - live evidence 2026-08-16: single-sentence
     # answers running 230+ characters, 14-17s to speak. Longer speech directly
