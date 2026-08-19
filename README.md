@@ -88,6 +88,7 @@ Prerequisites:
 ```powershell
 python -m venv venv
 venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools
 pip install -e ".[all,voice-offline,dev]"
 python -m playwright install chromium
 python -m src.vortex.main
