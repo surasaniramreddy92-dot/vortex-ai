@@ -69,6 +69,16 @@ from . import documents
 POSTGRES_DSN = os.getenv('VORTEX_POSTGRES_DSN', 'dbname=vortex user=vortex password=vortex_local_dev host=localhost')
 QDRANT_URL = os.getenv('VORTEX_QDRANT_URL', 'http://localhost:6333')
 QDRANT_COLLECTION = 'vortex_chunks'
+# Conversation-memory retrieval (2026-08-19): a second, separate Qdrant
+# collection for indexed conversation turns - reuses this same RagStore's
+# existing Postgres+Qdrant connections rather than standing up a second
+# pair (memory.py's module docstring explicitly scoped this out before as
+# "a much bigger, later-stage build"; it's smaller than that framing
+# suggested once document RAG's infrastructure already existed to build on
+# top of - no chunking needed, a turn already is the retrieval unit, and no
+# Postgres schema at all: SQLite in memory.py stays the sole source of
+# truth for turns, Qdrant here is purely a similarity index over them).
+QDRANT_TURNS_COLLECTION = 'vortex_conversation_turns'
 EMBED_MODEL = os.getenv('VORTEX_EMBED_MODEL', 'nomic-embed-text')
 EMBED_DIM = 768  # nomic-embed-text's output size
 CHUNK_SIZE = 800
@@ -288,6 +298,7 @@ class RagStore:
         self._init_postgres_schema()
         self._qdrant = QdrantClient(url=QDRANT_URL, timeout=5)
         self._init_qdrant_collection()
+        self._init_qdrant_turns_collection()
         # doc_id -> list of {'id','content','page','section'} - this document's
         # full chunk corpus, needed for BM25 (which has to score against every
         # chunk to know term rarity, not just a top-k). Cached because a single
@@ -329,6 +340,14 @@ class RagStore:
         if QDRANT_COLLECTION not in existing:
             self._qdrant.create_collection(
                 collection_name=QDRANT_COLLECTION,
+                vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
+            )
+
+    def _init_qdrant_turns_collection(self):
+        existing = [c.name for c in self._qdrant.get_collections().collections]
+        if QDRANT_TURNS_COLLECTION not in existing:
+            self._qdrant.create_collection(
+                collection_name=QDRANT_TURNS_COLLECTION,
                 vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
             )
 
@@ -488,6 +507,39 @@ class RagStore:
         chunks = _rerank(candidates, question, top_k) if RERANK_ENABLED else candidates[:top_k]
         return [{'content': c['content'], 'page': c.get('page'), 'section': c.get('section')} for c in chunks]
 
+    # ---------- conversation-memory retrieval ----------
+    # No chunking, no Postgres schema - a conversation turn already is the
+    # retrieval unit, and memory.py's SQLite table stays the sole source of
+    # truth for turns (this is purely a similarity index over them, safe to
+    # rebuild from scratch by re-indexing if the Qdrant collection is ever
+    # dropped - unlike document chunks, which don't exist anywhere else).
+
+    def index_turn(self, turn_id, role, content):
+        """Embeds and indexes one conversation turn. Called fire-and-forget
+        from a background thread (see app.py's _index_turn_async) so a slow
+        or failed embed/upsert never blocks the live conversation - any
+        exception here is the caller's problem to catch and log, not this
+        method's to swallow, so a real bug doesn't look like silent success."""
+        vector = _embed(content)
+        self._qdrant.upsert(collection_name=QDRANT_TURNS_COLLECTION, points=[
+            PointStruct(id=turn_id, vector=vector, payload={'role': role, 'content': content}),
+        ])
+
+    def search_turns(self, query, top_k=5):
+        """Returns up to top_k past conversation turns most similar to
+        `query`, most relevant first - [{'role', 'content'}, ...]. Dense
+        (embedding) search only, deliberately not the full hybrid+rerank
+        pipeline retrieve() uses for documents: conversation turns are short,
+        conversational text, not dense reference material where an exact
+        keyword (a SKU, a specific number) is likely to matter as much as
+        semantic similarity - see the module docstring's BM25 reasoning for
+        why that trade-off exists for documents but doesn't obviously apply
+        here. Can be revisited if real usage shows otherwise."""
+        query_vector = _embed(query)
+        hits = self._qdrant.query_points(
+            collection_name=QDRANT_TURNS_COLLECTION, query=query_vector, limit=top_k).points
+        return [{'role': h.payload['role'], 'content': h.payload['content']} for h in hits]
+
     def close(self):
         self._pg.close()
 
@@ -523,4 +575,19 @@ def build_rag_prompt(chunks, question):
         f'Based only on these excerpts, {question}\n'
         f'Answer concisely in a couple of spoken sentences.{cite_instruction} '
         "If the excerpts don't contain the answer, say so plainly."
+    )
+
+
+def build_memory_prompt(turns, query):
+    """`turns` is search_turns()'s return shape - [{'role', 'content'}, ...].
+    Mirrors build_rag_prompt's structure for the same reason: one place that
+    turns retrieved context into a prompt, so the "answer only from what was
+    actually retrieved, say so plainly if it's not there" instruction stays
+    consistent between documents and conversation memory."""
+    context = '\n'.join(f"{t['role']}: {t['content']}" for t in turns)
+    return (
+        f'Relevant excerpts from earlier conversation:\n{context}\n\n'
+        f'Based only on these excerpts, {query}\n'
+        'Answer concisely in a couple of spoken sentences. '
+        "If the excerpts don't contain the answer, say so plainly - don't guess."
     )

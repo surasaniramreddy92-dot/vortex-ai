@@ -104,6 +104,14 @@ class ReplyToEmailPrompt:
 
 
 @dataclass(frozen=True)
+class RecallMemory:
+    query: str
+    name: ClassVar[str] = 'recall_memory'
+    destructive: ClassVar[bool] = False
+    description: ClassVar[str] = 'Answer using retrieval over past conversation turns.'
+
+
+@dataclass(frozen=True)
 class PlayYoutube:
     query: str
     name: ClassVar[str] = 'youtube'
@@ -241,10 +249,10 @@ class Unhandled:
 # second, separate list that could drift from the real routing order.
 ALL_INTENT_TYPES = (
     ShutdownVortex, SpeakTime, SpeakDate, CloseAllPrompt, RestartPrompt, ShutdownPrompt,
-    Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail, ReplyToEmailPrompt, PlayYoutube,
-    SearchFiles, WebSearch, Browse, Click, ListFiles, DeleteFilePrompt, MoveFilePrompt,
-    CopyFile, RenameFilePrompt, CloseApp, OpenTarget, DocumentQuestion, SummarizeDocument,
-    ReadDocument, Unhandled,
+    Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail, ReplyToEmailPrompt, RecallMemory,
+    PlayYoutube, SearchFiles, WebSearch, Browse, Click, ListFiles, DeleteFilePrompt,
+    MoveFilePrompt, CopyFile, RenameFilePrompt, CloseApp, OpenTarget, DocumentQuestion,
+    SummarizeDocument, ReadDocument, Unhandled,
 )
 
 _YOUTUBE_PATTERNS = [
@@ -263,6 +271,8 @@ _READ_SCREEN = re.compile(r"(?:read|what'?s on) (?:my |the |this )?screen")
 # interpreted as "find a document named my email".
 _CHECK_EMAIL = re.compile(r"(?:check|read|what'?s in) (?:my )?(?:emails?|inbox|mail)$")
 _REPLY_EMAIL = re.compile(r'reply to (.+?) (?:and say|saying|with) (.+)')
+_RECALL_MEMORY = re.compile(
+    r"(?:do you remember|remember when i said|what did i (?:tell|say) you about|recall) (.+)")
 _SEARCH_FILES = re.compile(r'(?:find|search for) files?(?: named| called| containing)? (.+)')
 _WEB_SEARCH = re.compile(r'(?:search(?: the web)? for|google) (.+)')
 _BROWSE = re.compile(r'(?:go to|browse to|browse) (.+)')
@@ -317,6 +327,9 @@ def route(cmd):
         return ReplyToEmailPrompt(target=m.group(1).strip(), instruction=m.group(2).strip())
     if _CHECK_EMAIL.match(cmd):
         return CheckEmail()
+    m = _RECALL_MEMORY.match(cmd)
+    if m:
+        return RecallMemory(query=m.group(1).strip())
     # YouTube search-and-play is checked before the generic "open (.+)"
     # pattern below, which used to swallow phrases like "open youtube and
     # play X" whole and fall through to a dumb literal-phrase web search.

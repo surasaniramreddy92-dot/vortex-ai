@@ -37,7 +37,7 @@ everything else.
 | 2 | Desktop & OS Automation | **Implemented (v1)** |
 | 3 | Browser Automation & Web Interaction | **Implemented (v1)** |
 | 4 | LLM Brain, Tool Calling & Hybrid Intent Routing | Partial |
-| 5 | Memory, Knowledge & Production RAG | Partial |
+| 5 | Memory, Knowledge & Production RAG | **Implemented (v1)** |
 | 6 | Wake Word, Session Mode & Barge-In | **Implemented (v1)** |
 | 7 | Document Intelligence | **Implemented (v1)** |
 | 8 | Vision | Started |
@@ -68,6 +68,7 @@ phase by phase, in its own commit batch.
   "what does budget.xlsx say about Q3"     - RAG-retrieved answer from a document's contents
   "check my email"                         - summarizes unread mail (needs Gmail setup, see below)
   "reply to john and say I'll be there at 5" - LLM drafts a reply, asks before sending
+  "do you remember my favorite language"   - retrieval over past conversation turns
   "explain how Java works"                 - falls back to the local LLM
 ```
 
@@ -198,7 +199,7 @@ Microphone
   -> voice/session.py worker thread: "Yes Boss?"
        -> voice/stt.py: Google Web Speech, falling back to faster-whisper
           (offline) on a real network failure
-       -> core/intent_router.py: pure text -> Intent (28 types, no side effects)
+       -> core/intent_router.py: pure text -> Intent (29 types, no side effects)
             -> Intent matched? -> core/capability_registry.py dispatches to:
                  tools/system/* (apps/processes) + platform/windows/* (the how)
                  browser.py (Playwright)
@@ -206,7 +207,7 @@ Microphone
                  files.py (list/search/move/copy/rename/delete)
                  screen.py (screenshot + OCR)
                  mail.py (Gmail check/reply, LLM-drafted, confirm-before-send)
-                 rag.py (RAG-backed document Q&A via Postgres+Qdrant)
+                 rag.py (RAG-backed document Q&A + conversation-memory recall via Postgres+Qdrant)
             -> Unhandled -> llm/ollama_provider.py (llama3.2:1b, streamed)
   -> voice/tts.py: response text -> sentence-chunked -> edge-tts (falling
        back to piper-tts offline on a network failure) -> pygame playback
@@ -241,11 +242,11 @@ god-object lives in its own module:
 - [src/vortex/llm/](src/vortex/llm/) — `LLMProvider` interface (`provider.py`) + the concrete Ollama implementation (`ollama_provider.py`)
 - [src/vortex/platform/](src/vortex/platform/) — `PlatformAdapter` interface (`base.py`) + the Windows implementation (`windows/power.py`, plus its app-table and protected-process data files) — the seam a future Linux/macOS adapter would plug into
 - [src/vortex/tools/system/](src/vortex/tools/system/) — OS-automation capability logic (open/close apps, bulk-close), consuming the platform-specific tables above
-- [src/vortex/core/](src/vortex/core/) — `intent_router.py` (pure text→Intent classification, 28 Intent types), `capability_registry.py` (dispatch), `policy_engine.py` (yes/no confirmation parsing), `orchestrator.py` (process lifecycle: tray icon, worker thread, teardown), `state_manager.py` (explicit `VortexState` enum)
+- [src/vortex/core/](src/vortex/core/) — `intent_router.py` (pure text→Intent classification, 29 Intent types), `capability_registry.py` (dispatch), `policy_engine.py` (yes/no confirmation parsing), `orchestrator.py` (process lifecycle: tray icon, worker thread, teardown), `state_manager.py` (explicit `VortexState` enum)
 - [src/vortex/memory.py](src/vortex/memory.py) — SQLite-backed conversation history
 - [src/vortex/documents.py](src/vortex/documents.py) — PDF/DOCX/XLSX/text reading, with OCR fallback for scanned PDFs
 - [src/vortex/browser.py](src/vortex/browser.py) — Playwright-driven navigation/search/click
-- [src/vortex/rag.py](src/vortex/rag.py) — chunking/embedding/Postgres+Qdrant hybrid retrieval for document Q&A
+- [src/vortex/rag.py](src/vortex/rag.py) — chunking/embedding/Postgres+Qdrant hybrid retrieval for document Q&A, plus dense-only retrieval over indexed conversation turns for memory recall ("do you remember...")
 - [src/vortex/files.py](src/vortex/files.py) — voice-triggered list/search/move/copy/rename/delete, scoped to Desktop/Documents/Downloads
 - [src/vortex/screen.py](src/vortex/screen.py) — screenshot + OCR ("read my screen")
 - [src/vortex/popup.py](src/vortex/popup.py) — synchronized visual file-listing window
@@ -290,9 +291,11 @@ instead of only synthetic ones.
   conditions are reduced (noise-floor-aware AGC, raised thresholds) but not
   eliminated. Every trigger now logs its score and noise floor, so further
   tuning is data-driven rather than guesswork.
-- Conversation memory persists across restarts (SQLite), but it's still
-  plain chronological history, not retrieval — the Postgres+Qdrant RAG stack
-  is used for document Q&A only, not (yet) for searching past conversations.
+- Conversation memory persists across restarts (SQLite) and now supports
+  retrieval too ("do you remember X") via the same Postgres+Qdrant stack
+  used for document Q&A — but dense (embedding) search only, not the hybrid
+  BM25+rerank pipeline documents get; needs Postgres+Qdrant running (see
+  Quickstart), degrades to a clear spoken explanation if they aren't.
 - Document *question-answering* uses real chunking/embedding/retrieval
   (Postgres+Qdrant); document *summarization* still truncates the whole file
   — summarizing wants the whole document, not similarity-retrieved snippets,

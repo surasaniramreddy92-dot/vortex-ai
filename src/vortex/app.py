@@ -18,7 +18,7 @@ from .memory import MemoryStore
 from .documents import resolve_document, extract_text, build_document_prompt
 from .browser import BrowserAgent
 from .mail import MailAgent
-from .rag import RagStore, build_rag_prompt
+from .rag import RagStore, build_rag_prompt, build_memory_prompt
 from .config import VortexConfig
 from . import files as fileops
 from .audit import AuditLog
@@ -273,7 +273,8 @@ class Vortex:
     def ask_llm_stream(self, query):
         """Yield reply text as Ollama produces it, so speech can start early and
         generation stops the moment we are interrupted."""
-        self.memory.add_turn('user', query)
+        user_turn_id = self.memory.add_turn('user', query)
+        self._index_turn_async(user_turn_id, 'user', query)
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.memory.recent(HISTORY_TURNS)
         reply = ''
         try:
@@ -292,7 +293,52 @@ class Vortex:
                 yield 'Sorry Boss, my reasoning engine is currently offline.'
         finally:
             if reply:
-                self.memory.add_turn('assistant', reply)
+                assistant_turn_id = self.memory.add_turn('assistant', reply)
+                self._index_turn_async(assistant_turn_id, 'assistant', reply)
+
+    def _index_turn_async(self, turn_id, role, content):
+        """Fire-and-forget: embedding + a Qdrant upsert on every conversation
+        turn would add real latency to the hot conversational path if done
+        synchronously here (this runs inside ask_llm_stream, on the same
+        thread TTS is already consuming from). A background thread means a
+        slow or failed index never delays or breaks the actual spoken
+        response - SQLite (memory.py) is already the durable, authoritative
+        record by the time this is even called; Qdrant here is purely a
+        similarity index on top of it, safe to be eventually-consistent or
+        even to fail outright without losing anything real."""
+        if self.rag is None:
+            return
+
+        def _run():
+            try:
+                self.rag.index_turn(turn_id, role, content)
+            except Exception as e:
+                self.log(f'Failed to index conversation turn {turn_id} for retrieval: {e}')
+        threading.Thread(target=_run, daemon=True).start()
+
+    def recall_memory(self, query):
+        """Retrieval-backed answer over past conversation turns - the
+        "Memory" half of Phase 5 that memory.py's own docstring flagged as
+        deliberately not built yet ("still no retrieval over it, just
+        chronological recall"). Degrades to a clear spoken explanation, not
+        a crash or a silent no-op, if the retrieval service isn't running -
+        same honest contract as document RAG's own degrade path."""
+        if self.rag is None:
+            self.speak("I can't search past conversations right now - that needs Postgres and Qdrant running.")
+            return
+        try:
+            turns = self.rag.search_turns(query)
+        except Exception as e:
+            self.log(f'Memory search failed: {e}')
+            self.speak("I couldn't search my memory right now.")
+            return
+        if not turns:
+            self.speak("I don't have anything relevant in memory about that.")
+            return
+        prompt = build_memory_prompt(turns, query)
+        self.speak_stream(self._stream_llm_answer(
+            'Answer strictly using the provided conversation excerpts. If they do not contain '
+            'the answer, say so plainly. Answer in short spoken sentences.', prompt))
 
     # ---------- documents ----------
 

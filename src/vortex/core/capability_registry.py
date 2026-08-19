@@ -38,6 +38,7 @@ class CapabilityRegistry:
             intents.ReadScreen: self._read_screen,
             intents.CheckEmail: self._check_email,
             intents.ReplyToEmailPrompt: self._reply_to_email_prompt,
+            intents.RecallMemory: self._recall_memory,
             intents.PlayYoutube: self._play_youtube,
             intents.SearchFiles: self._search_files,
             intents.WebSearch: self._web_search,
@@ -168,6 +169,9 @@ class CapabilityRegistry:
             self.host.log(f'Email check failed: {e}')
             self.host.speak("I couldn't reach Gmail right now.")
             return None
+
+    def _recall_memory(self, intent):
+        self.host.recall_memory(intent.query)
 
     def _play_youtube(self, intent):
         self.host.speak(self.host.browser.play_youtube(intent.query))
