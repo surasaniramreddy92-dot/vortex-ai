@@ -44,5 +44,13 @@ jobs:
       - name: Type-check (mypy)
         run: mypy src/vortex --ignore-missing-imports
 
+      - name: Dependency vulnerability scan (pip-audit)
+        # Real precedent, not theoretical: the first run of this step found
+        # 15 CVEs in the directly-pinned Pillow==12.2.0 (fixed by bumping to
+        # 12.3.0). Fails the build on any known vulnerability in what's
+        # actually installed - a fresh, clean install here, so unlike a local
+        # dev venv there's no stray/orphaned package noise to filter out.
+        run: pip-audit
+
       - name: Run tests (unit + integration, excluding hardware-dependent)
         run: pytest tests/unit tests/integration -m "not hardware" -v
