@@ -73,6 +73,23 @@ def v():
     inst.summarize_document = recorder('summarize_document')
     inst.answer_document_question = recorder('answer_document_question')
 
+    class FakeMail:
+        def __init__(self):
+            self.unread = []
+            self.sent = []
+
+        def list_unread(self):
+            return self.unread
+
+        def get_email_body(self, message_id):
+            return next(e['body'] for e in self.unread if e['id'] == message_id)
+
+        def send_reply(self, message_id, body):
+            self.sent.append((message_id, body))
+
+    inst.mail = FakeMail()
+    inst.draft_email_reply = lambda original_body, instruction: f'DRAFT[{instruction}]'
+
     yield inst
     inst.memory.close()
     if inst.rag is not None:
@@ -315,3 +332,74 @@ def test_list_files_matches_on_as_well_as_in(v, monkeypatch, tmp_path):
         assert not any(c[0] == 'speak_stream' for c in v.calls), (
             f'{phrase!r} fell through to the LLM fallback instead of list_files')
         assert any('report.txt' in s for s in v.spoken), f'{phrase!r} did not list the real file'
+
+
+# ---------- email ----------
+
+def test_check_email_speaks_a_summary(v):
+    v.mail.unread = [
+        {'id': 'm1', 'sender': 'Jane Doe <jane@x.com>', 'subject': 'Lunch?', 'snippet': ''},
+        {'id': 'm2', 'sender': 'bob@x.com', 'subject': 'Re: Project', 'snippet': ''},
+    ]
+    v.execute('check my email')
+    assert any('2 unread emails' in s and 'Jane Doe' in s and 'Lunch?' in s and 'bob@x.com' in s
+               for s in v.spoken)
+
+
+def test_check_email_with_no_unread_says_so(v):
+    v.mail.unread = []
+    v.execute('check my email')
+    assert v.spoken == ['No unread emails.']
+
+
+def test_check_email_when_not_configured_degrades_gracefully(v):
+    def boom():
+        raise FileNotFoundError('no credentials.json')
+    v.mail.list_unread = boom
+    v.execute('check my email')
+    assert any("isn't set up yet" in s for s in v.spoken)
+
+
+def test_reply_to_email_drafts_and_prompts_for_confirmation_not_immediate_send(v):
+    v.mail.unread = [{'id': 'm1', 'sender': 'John Doe <john@x.com>', 'subject': 'Meeting',
+                       'snippet': '', 'body': 'Can you make it at 5?'}]
+    v.execute('reply to john and say i will be there')
+    assert v.awaiting_confirmation == {
+        'action': 'send_email_reply', 'message_id': 'm1',
+        'body': 'DRAFT[i will be there]', 'to': 'John Doe <john@x.com>', 'subject': 'Meeting'}
+    assert v.mail.sent == [], 'must not send before confirmation'
+    assert any('DRAFT[i will be there]' in s for s in v.spoken)
+
+
+def test_reply_to_email_no_match_speaks_error(v):
+    v.mail.unread = [{'id': 'm1', 'sender': 'john@x.com', 'subject': 'Hi', 'snippet': '', 'body': ''}]
+    v.execute('reply to nobody and say hi')
+    assert any("couldn't find" in s for s in v.spoken)
+    assert v.awaiting_confirmation is None
+
+
+def test_reply_to_email_ambiguous_match_asks_for_specificity(v):
+    v.mail.unread = [
+        {'id': 'm1', 'sender': 'john@x.com', 'subject': 'Meeting A', 'snippet': '', 'body': ''},
+        {'id': 'm2', 'sender': 'john@x.com', 'subject': 'Meeting B', 'snippet': '', 'body': ''},
+    ]
+    v.execute('reply to john and say hi')
+    assert any('please be more specific' in s for s in v.spoken)
+    assert v.awaiting_confirmation is None
+
+
+def test_confirmed_email_reply_actually_sends(v):
+    v.mail.unread = [{'id': 'm1', 'sender': 'john@x.com', 'subject': 'Hi', 'snippet': '', 'body': 'body'}]
+    v.execute('reply to john and say ok')
+    v.execute('yes')
+    assert v.mail.sent == [('m1', 'DRAFT[ok]')]
+    assert v.awaiting_confirmation is None
+    assert 'Sent.' in v.spoken
+
+
+def test_declined_email_reply_never_sends(v):
+    v.mail.unread = [{'id': 'm1', 'sender': 'john@x.com', 'subject': 'Hi', 'snippet': '', 'body': 'body'}]
+    v.execute('reply to john and say ok')
+    v.execute('no thanks')
+    assert v.mail.sent == []
+    assert v.awaiting_confirmation is None

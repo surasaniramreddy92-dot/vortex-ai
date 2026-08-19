@@ -17,6 +17,7 @@ import ollama
 from .memory import MemoryStore
 from .documents import resolve_document, extract_text, build_document_prompt
 from .browser import BrowserAgent
+from .mail import MailAgent
 from .rag import RagStore, build_rag_prompt
 from .config import VortexConfig
 from . import files as fileops
@@ -106,6 +107,9 @@ OFFLINE_TTS_VOICE = _cfg.offline_tts_voice
 OFFLINE_TTS_MODEL_DIR = _cfg.offline_tts_model_dir
 HISTORY_TURNS = _cfg.history_turns
 SUMMARY_MAX_CHARS = _cfg.summary_max_chars  # plain-summarize path only; RAG-backed Q&A doesn't need this cap
+GMAIL_CREDENTIALS_PATH = _cfg.gmail_credentials_path
+GMAIL_TOKEN_PATH = _cfg.gmail_token_path
+MAIL_MAX_RESULTS = _cfg.mail_max_results
 logging.basicConfig(filename=os.path.join(LOG_DIR, 'vortex.log'), level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 try:
     pygame.mixer.init()
@@ -128,6 +132,11 @@ class Vortex:
         self.audit = AuditLog(AUDIT_LOG_PATH)
         self.memory = MemoryStore(MEMORY_DB_PATH)
         self.browser = BrowserAgent()
+        # Lazy exactly like BrowserAgent above - zero network/OAuth calls at
+        # construction, so this stays as safe to construct as everything else
+        # here (see mail.py's module docstring for why that matters).
+        self.mail = MailAgent(credentials_path=GMAIL_CREDENTIALS_PATH, token_path=GMAIL_TOKEN_PATH,
+                               max_results=MAIL_MAX_RESULTS)
         try:
             self.rag = RagStore()
         except Exception as e:
@@ -351,6 +360,21 @@ class Vortex:
             'If the answer is not in the document, say so plainly. Answer in short spoken sentences.',
             prompt))
 
+    # ---------- email (mail.py owns the Gmail API details) ----------
+
+    def draft_email_reply(self, original_body, instruction):
+        """Blocking, not streamed to speech - unlike every other
+        _stream_llm_answer caller, the reply-drafting flow needs the
+        complete text before speaking it (so the user hears the whole
+        draft, not a truncated stream) and before it can be stored in
+        awaiting_confirmation for the later, explicit send."""
+        prompt = f"Original email:\n{original_body[:2000]}\n\nInstruction for the reply: {instruction}"
+        return ''.join(self._stream_llm_answer(
+            'You draft short, polite email replies. Output only the reply body text - '
+            'no subject line, no salutation boilerplate beyond what reads naturally, '
+            'no explanation of what you did.',
+            prompt))
+
     # ---------- actions ----------
 
     def open_target(self, target):
@@ -436,6 +460,15 @@ class Vortex:
             self.audit.record('rename_file', path, 'failed', reason=str(e))
             self.speak(f"I couldn't rename that file: {e}")
 
+    def _do_send_email_reply(self, pending):
+        try:
+            self.mail.send_reply(pending['message_id'], pending['body'])
+            self.audit.record('send_email_reply', pending['message_id'], 'executed', to=pending.get('to'))
+            self.speak('Sent.')
+        except Exception as e:
+            self.audit.record('send_email_reply', pending['message_id'], 'failed', reason=str(e))
+            self.speak("I couldn't send that reply.")
+
     def handle_confirmation(self, cmd):
         if not self.awaiting_confirmation:
             return False
@@ -449,6 +482,7 @@ class Vortex:
             elif action == 'delete_file': self._do_delete_file(pending['path'])
             elif action == 'move_file': self._do_move_file(pending['path'], pending['dest_dir'])
             elif action == 'rename_file': self._do_rename_file(pending['path'], pending['new_name'])
+            elif action == 'send_email_reply': self._do_send_email_reply(pending)
         else:
             self.awaiting_confirmation = None
             self.audit.record(action, pending.get('path', action), 'declined')

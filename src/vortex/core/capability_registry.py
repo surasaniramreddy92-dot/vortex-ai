@@ -16,6 +16,12 @@ from .. import popup
 from .. import screen as screen_reader
 
 
+def _short_sender(sender):
+    """"John Doe <john@example.com>" -> "John Doe" - the display name is
+    what's worth speaking aloud, not the raw address."""
+    return sender.split('<')[0].strip() or sender
+
+
 class CapabilityRegistry:
     def __init__(self, host):
         self.host = host
@@ -30,6 +36,8 @@ class CapabilityRegistry:
             intents.CloseBrowser: self._close_browser,
             intents.ReadPage: self._read_page,
             intents.ReadScreen: self._read_screen,
+            intents.CheckEmail: self._check_email,
+            intents.ReplyToEmailPrompt: self._reply_to_email_prompt,
             intents.PlayYoutube: self._play_youtube,
             intents.SearchFiles: self._search_files,
             intents.WebSearch: self._web_search,
@@ -101,6 +109,65 @@ class CapabilityRegistry:
             self.host.speak(err)
             return
         self.host.speak(text)
+
+    def _check_email(self, intent):
+        emails = self._list_unread_or_speak_error()
+        if emails is None:
+            return
+        if not emails:
+            self.host.speak('No unread emails.')
+            return
+        summaries = [f"{_short_sender(e['sender'])}: {e['subject']}" for e in emails]
+        plural = 's' if len(emails) != 1 else ''
+        self.host.speak(f"You have {len(emails)} unread email{plural}: " + '; '.join(summaries))
+
+    def _reply_to_email_prompt(self, intent):
+        """Drafts a reply via the LLM and speaks it for confirmation - never
+        sends. The actual send only happens from handle_confirmation() once
+        the user says yes, exactly like delete/move/rename file ops."""
+        emails = self._list_unread_or_speak_error()
+        if emails is None:
+            return
+        target = intent.target.lower()
+        matches = [e for e in emails if target in e['sender'].lower() or target in e['subject'].lower()]
+        if not matches:
+            self.host.speak(f"I couldn't find an unread email matching {intent.target}.")
+            return
+        if len(matches) > 1:
+            self.host.speak(
+                f"I found {len(matches)} unread emails matching {intent.target} - please be more specific.")
+            return
+        email = matches[0]
+        try:
+            body = self.host.mail.get_email_body(email['id'])
+        except Exception as e:
+            self.host.log(f'Email body fetch failed: {e}')
+            self.host.speak("I found that email but couldn't read its contents.")
+            return
+        draft = self.host.draft_email_reply(body, intent.instruction)
+        if not draft.strip():
+            self.host.speak("I couldn't draft a reply for that.")
+            return
+        self.host.awaiting_confirmation = {
+            'action': 'send_email_reply', 'message_id': email['id'], 'body': draft,
+            'to': email['sender'], 'subject': email['subject']}
+        self.host.audit.record('send_email_reply', email['id'], 'prompted', to=email['sender'])
+        self.host.speak(f"Here's my draft reply: {draft} Should I send it?")
+
+    def _list_unread_or_speak_error(self):
+        """Shared by _check_email/_reply_to_email_prompt - returns None (and
+        has already spoken the reason) on any failure, so callers can just
+        check for that instead of duplicating the same two except clauses."""
+        try:
+            return self.host.mail.list_unread()
+        except FileNotFoundError:
+            self.host.speak(
+                "Email isn't set up yet - I need a Gmail credentials file. Check the README for how to connect it.")
+            return None
+        except Exception as e:
+            self.host.log(f'Email check failed: {e}')
+            self.host.speak("I couldn't reach Gmail right now.")
+            return None
 
     def _play_youtube(self, intent):
         self.host.speak(self.host.browser.play_youtube(intent.query))

@@ -41,6 +41,7 @@ everything else.
 | 6 | Wake Word, Session Mode & Barge-In | **Implemented (v1)** |
 | 7 | Document Intelligence | **Implemented (v1)** |
 | 8 | Vision | Started |
+| N/A | Communication (Email) — not one of the original 17 phases, see [IMPLEMENTED.md](IMPLEMENTED.md) | Started |
 | 15 | Security, Identity & Policy Enforcement | Partial |
 
 Everything else in the master roadmap (vision, service layer, durable
@@ -65,6 +66,8 @@ phase by phase, in its own commit batch.
   "read the page"                          - reads back the open page's text
   "summarize my resume"                    - finds + summarizes a document (whole-document)
   "what does budget.xlsx say about Q3"     - RAG-retrieved answer from a document's contents
+  "check my email"                         - summarizes unread mail (needs Gmail setup, see below)
+  "reply to john and say I'll be there at 5" - LLM drafts a reply, asks before sending
   "explain how Java works"                 - falls back to the local LLM
 ```
 
@@ -122,6 +125,37 @@ Then set `VORTEX_POSTGRES_DSN` and `VORTEX_QDRANT_URL` in `.env` (see
 `.env.example` for the shape) to match. VORTEX's RAG schema and Qdrant
 collection are created automatically on first run — no manual migration step.
 
+### Setting up Gmail ("check my email" / "reply to X and say Y")
+
+Optional. Without this, email commands speak "Email isn't set up yet"
+instead of failing silently or crashing. Needs a one-time OAuth consent in
+a real browser - not something `pip install` alone can do.
+
+1. **Google Cloud Console** (one-time, ~5 minutes):
+   - Go to [console.cloud.google.com](https://console.cloud.google.com),
+     create a project (or reuse one).
+   - **APIs & Services → Library** → search "Gmail API" → Enable.
+   - **APIs & Services → Credentials** → Create Credentials → OAuth client
+     ID → Application type: **Desktop app**.
+   - If prompted for an OAuth consent screen first, choose **External**,
+     fill in the required fields (app name, your email) - it can stay in
+     "Testing" mode, no Google review needed for personal use with your own
+     account added as a test user.
+   - Download the credentials JSON.
+2. Save it as `gmail_credentials.json` at your `VORTEX_HOME` root (e.g.
+   `E:\VORTEX\gmail_credentials.json`) - or point `VORTEX_GMAIL_CREDENTIALS`
+   at wherever you saved it instead.
+3. The first time you say "check my email" or "reply to...", a browser
+   window opens asking you to sign in and approve access - this only
+   happens once. VORTEX caches the resulting token at
+   `<VORTEX_HOME>/data/gmail_token.json` (`VORTEX_GMAIL_TOKEN` to
+   override) and refreshes it silently after that.
+
+Scopes requested are read-only + send only (`gmail.readonly` +
+`gmail.send`) - VORTEX never deletes, archives, or labels anything. Every
+reply is drafted by the LLM and spoken back for your explicit yes/no before
+it's ever sent - see "Known limitations" below for what this doesn't do yet.
+
 Say **"Hey Vortex"**, wait for "Yes Boss?", then speak a command. Follow-up
 commands and yes/no confirmations don't need the wake word repeated — the
 session stays open for `VORTEX_SESSION_TIMEOUT` seconds (default 18s) of
@@ -149,6 +183,9 @@ While VORTEX is talking, saying "Hey Vortex" again cuts it off mid-sentence
 | `VORTEX_OFFLINE_FALLBACK_ENABLED` | `true` | kill switch for the offline STT (`faster-whisper`)/TTS (`piper-tts`) fallback, engaged only on a real network-reachability failure |
 | `VORTEX_OCR_ENABLED` | `true` | OCR fallback for scanned PDF pages and `read my screen` (needs the separate Tesseract binary on PATH) |
 | `VORTEX_AUDIT_LOG` | `<VORTEX_HOME>/logs/audit.jsonl` | structured JSON-lines record of consequential actions (file delete/move, app close, shutdown/restart, confirmation prompts and their outcomes) |
+| `VORTEX_GMAIL_CREDENTIALS` | `<VORTEX_HOME>/gmail_credentials.json` | OAuth client credentials you download from Google Cloud Console (see "Setting up Gmail") |
+| `VORTEX_GMAIL_TOKEN` | `<VORTEX_HOME>/data/gmail_token.json` | cached OAuth token after the one-time browser consent, auto-refreshed after that |
+| `VORTEX_MAIL_MAX_RESULTS` | `5` | how many unread emails "check my email" summarizes at once |
 
 ## Architecture today
 
@@ -160,13 +197,14 @@ Microphone
   -> voice/session.py worker thread: "Yes Boss?"
        -> voice/stt.py: Google Web Speech, falling back to faster-whisper
           (offline) on a real network failure
-       -> core/intent_router.py: pure text -> Intent (26 types, no side effects)
+       -> core/intent_router.py: pure text -> Intent (28 types, no side effects)
             -> Intent matched? -> core/capability_registry.py dispatches to:
                  tools/system/* (apps/processes) + platform/windows/* (the how)
                  browser.py (Playwright)
                  documents.py (PyMuPDF/python-docx/openpyxl, OCR fallback)
                  files.py (list/search/move/copy/rename/delete)
                  screen.py (screenshot + OCR)
+                 mail.py (Gmail check/reply, LLM-drafted, confirm-before-send)
                  rag.py (RAG-backed document Q&A via Postgres+Qdrant)
             -> Unhandled -> llm/ollama_provider.py (llama3.2:1b, streamed)
   -> voice/tts.py: response text -> sentence-chunked -> edge-tts (falling
@@ -202,7 +240,7 @@ god-object lives in its own module:
 - [src/vortex/llm/](src/vortex/llm/) — `LLMProvider` interface (`provider.py`) + the concrete Ollama implementation (`ollama_provider.py`)
 - [src/vortex/platform/](src/vortex/platform/) — `PlatformAdapter` interface (`base.py`) + the Windows implementation (`windows/power.py`, plus its app-table and protected-process data files) — the seam a future Linux/macOS adapter would plug into
 - [src/vortex/tools/system/](src/vortex/tools/system/) — OS-automation capability logic (open/close apps, bulk-close), consuming the platform-specific tables above
-- [src/vortex/core/](src/vortex/core/) — `intent_router.py` (pure text→Intent classification, 26 Intent types), `capability_registry.py` (dispatch), `policy_engine.py` (yes/no confirmation parsing), `orchestrator.py` (process lifecycle: tray icon, worker thread, teardown), `state_manager.py` (explicit `VortexState` enum)
+- [src/vortex/core/](src/vortex/core/) — `intent_router.py` (pure text→Intent classification, 28 Intent types), `capability_registry.py` (dispatch), `policy_engine.py` (yes/no confirmation parsing), `orchestrator.py` (process lifecycle: tray icon, worker thread, teardown), `state_manager.py` (explicit `VortexState` enum)
 - [src/vortex/memory.py](src/vortex/memory.py) — SQLite-backed conversation history
 - [src/vortex/documents.py](src/vortex/documents.py) — PDF/DOCX/XLSX/text reading, with OCR fallback for scanned PDFs
 - [src/vortex/browser.py](src/vortex/browser.py) — Playwright-driven navigation/search/click
@@ -211,6 +249,7 @@ god-object lives in its own module:
 - [src/vortex/screen.py](src/vortex/screen.py) — screenshot + OCR ("read my screen")
 - [src/vortex/popup.py](src/vortex/popup.py) — synchronized visual file-listing window
 - [src/vortex/audit.py](src/vortex/audit.py) — structured JSON-lines audit trail for consequential actions
+- [src/vortex/mail.py](src/vortex/mail.py) — Gmail check/reply, lazy OAuth like `browser.py`'s lazy Playwright launch, reply-sending gated behind the same confirmation flow as destructive file ops
 
 `tests/unit/` (228 tests) and `tests/integration/` (real intent router →
 real capability registry → real tools/system, faking only the genuinely
@@ -265,6 +304,18 @@ instead of only synthetic ones.
   would mean bypassing an anti-abuse mechanism.
 - Browser automation is navigate/search/click/read-page only — no form
   filling, uploads, downloads, or authenticated multi-page workflows yet.
+- Email is voice-triggered only — you ask VORTEX to check mail or draft a
+  reply; it doesn't proactively notice new mail and interrupt you about it
+  (that would need a background-polling worker integrated with the wake/
+  session state machine, deliberately deferred as a separate, larger piece
+  of work). "Reply to X" resolves X against unread messages only (sender or
+  subject substring match), not your whole mailbox, and needs an exact-
+  enough match — ambiguous matches ask you to be more specific rather than
+  guessing. Every reply is LLM-drafted and spoken back for an explicit yes/
+  no before sending; nothing is ever sent automatically. Not yet
+  live-verified end-to-end (needs your own Gmail OAuth setup - see "Setting
+  up Gmail" - to test against a real inbox); unit-tested against a mocked
+  Gmail API instead.
 - Wake-word/AGC/barge-in timing and the offline STT/TTS fallback's actual
   trigger condition both need real microphone/speaker hardware to verify —
   covered by historical live acoustic testing (see `CHANGELOG.md`) rather

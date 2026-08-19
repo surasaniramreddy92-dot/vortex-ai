@@ -269,8 +269,13 @@ class VortexConfig:
     # playable ~4.6s WAV file - see IMPLEMENTED.md for the full test.
     offline_tts_voice: str = field(
         default_factory=lambda: os.getenv('VORTEX_OFFLINE_TTS_VOICE', 'en_US-lessac-medium'))
+    # Gmail integration (mail.py): how many unread messages "check my email"
+    # summarizes at once. Kept small on purpose - this gets spoken aloud, not
+    # displayed, so a long list is a genuinely worse experience, not just a
+    # slower one.
+    mail_max_results: int = field(default_factory=lambda: _int_env('VORTEX_MAIL_MAX_RESULTS', 5))
 
-    # These seven depend on `root`/`data_dir`/`log_dir`, so they can't use a
+    # These nine depend on `root`/`data_dir`/`log_dir`, so they can't use a
     # simple default_factory with no arguments - resolved in __post_init__
     # once root is known.
     wake_word: str = field(default='')
@@ -279,6 +284,8 @@ class VortexConfig:
     memory_db_path: str = field(default='')
     offline_stt_model_dir: str = field(default='')
     offline_tts_model_dir: str = field(default='')
+    gmail_credentials_path: str = field(default='')
+    gmail_token_path: str = field(default='')
     # Phase 2 (2026-08-16): structured JSON-lines audit trail for consequential
     # actions (file delete/move, app close, shutdown/restart, confirmation
     # prompts and their outcomes) - see audit.py's module docstring for why
@@ -306,6 +313,16 @@ class VortexConfig:
             'VORTEX_OFFLINE_TTS_MODEL_DIR', os.path.join(self.data_dir, 'offline_tts_models')))
         object.__setattr__(self, 'audit_log_path', os.getenv(
             'VORTEX_AUDIT_LOG', os.path.join(self.log_dir, 'audit.jsonl')))
+        # credentials.json is a one-time file the user downloads themselves
+        # from Google Cloud Console (see README's mail setup section) and
+        # places at this path - root-relative like the wake model, since it's
+        # user-provided setup data, not something VORTEX generates. The
+        # cached OAuth token IS VORTEX-generated/refreshed, so it lives under
+        # data_dir alongside memory_db_path instead.
+        object.__setattr__(self, 'gmail_credentials_path', os.getenv(
+            'VORTEX_GMAIL_CREDENTIALS', os.path.join(self.root, 'gmail_credentials.json')))
+        object.__setattr__(self, 'gmail_token_path', os.getenv(
+            'VORTEX_GMAIL_TOKEN', os.path.join(self.data_dir, 'gmail_token.json')))
 
     @classmethod
     def from_env(cls):

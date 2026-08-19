@@ -65,6 +65,18 @@ def test_read_screen():
         assert ir.route(phrase) == ir.ReadScreen(), phrase
 
 
+def test_check_email_phrasings():
+    for phrase in ('check my email', 'read my email', "what's in my inbox", 'check my inbox'):
+        assert ir.route(phrase) == ir.CheckEmail(), phrase
+
+
+def test_reply_to_email_prompt():
+    assert ir.route('reply to john and say i will be there at 5') == ir.ReplyToEmailPrompt(
+        target='john', instruction='i will be there at 5')
+    assert ir.route('reply to the meeting email saying i confirm') == ir.ReplyToEmailPrompt(
+        target='the meeting email', instruction='i confirm')
+
+
 def test_youtube_all_three_phrasings():
     assert ir.route('youtube play some song') == ir.PlayYoutube(query='some song')
     assert ir.route('play some song on youtube') == ir.PlayYoutube(query='some song')
@@ -159,6 +171,11 @@ def test_read_my_screen_does_not_become_a_document_lookup():
 
 def test_read_an_actual_document_name_still_reaches_read_document():
     assert ir.route('read my_notes.txt') == ir.ReadDocument(doc_name='my_notes.txt')
+
+
+def test_read_my_email_does_not_become_a_document_lookup():
+    intent = ir.route('read my email')
+    assert isinstance(intent, ir.CheckEmail)
 
 
 def test_close_browser_does_not_become_generic_close_app():
