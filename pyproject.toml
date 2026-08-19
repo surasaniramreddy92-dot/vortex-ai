@@ -78,7 +78,10 @@ voice-offline = [
 # extra - see docs/CURRENT_STATE.md Phase 2/platform notes).
 windows = [
     "pystray==0.19.5",
-    "Pillow==12.2.0",
+    # 2026-08-19: bumped from 12.2.0 - pip-audit flagged 15 real CVEs in
+    # 12.2.0 (PYSEC-2026-2253 through -3496), all fixed in 12.3.0. Verified
+    # installing cleanly before pinning, not assumed.
+    "Pillow==12.3.0",
 ]
 # Phase 7: document intelligence (PDF/DOCX/XLSX text extraction).
 documents = [
@@ -93,7 +96,10 @@ documents = [
     # than failing. Pillow is already pulled in by the `windows` extra, but
     # `documents` doesn't depend on `windows`, so it's listed here too.
     "pytesseract==0.3.13",
-    "Pillow==12.2.0",
+    # 2026-08-19: bumped from 12.2.0 - pip-audit flagged 15 real CVEs in
+    # 12.2.0 (PYSEC-2026-2253 through -3496), all fixed in 12.3.0. Verified
+    # installing cleanly before pinning, not assumed.
+    "Pillow==12.3.0",
 ]
 # Phase 3: browser automation. After installing, also run:
 #   python -m playwright install chromium
@@ -136,6 +142,12 @@ dev = [
     # adding them here, not assumed.
     "ruff==0.16.3",
     "mypy==2.3.1",
+    # 2026-08-19 (Phase 15 security hardening slice): dependency
+    # vulnerability scanning in CI. First real run found 15 CVEs in the
+    # directly-pinned Pillow==12.2.0 (fixed by bumping to 12.3.0, see the
+    # `windows`/`documents` extras above) - this exists to catch the next
+    # one automatically instead of relying on someone noticing.
+    "pip-audit==2.10.1",
 ]
 # Everything needed to actually run `python -m src.vortex.main` today.
 # Deliberately excludes voice-offline - see that extra's comment above for
