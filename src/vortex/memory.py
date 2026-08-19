@@ -25,9 +25,13 @@ class MemoryStore:
         self._conn.commit()
 
     def add_turn(self, role, content):
+        """Returns the new turn's row id - used by app.py to index it for
+        retrieval (rag.py's index_turn) without a second query to find out
+        which row it just wrote."""
         with self._lock:
-            self._conn.execute('INSERT INTO turns (role, content) VALUES (?, ?)', (role, content))
+            cur = self._conn.execute('INSERT INTO turns (role, content) VALUES (?, ?)', (role, content))
             self._conn.commit()
+            return cur.lastrowid
 
     def recent(self, limit=10):
         """Oldest-first, most-recent `limit` turns - ready to feed straight to an LLM's messages list."""

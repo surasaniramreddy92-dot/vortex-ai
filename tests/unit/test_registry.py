@@ -72,6 +72,7 @@ def v():
     inst.speak_stream = lambda gen: inst.calls.append(('speak_stream', (list(gen),), {}))
     inst.summarize_document = recorder('summarize_document')
     inst.answer_document_question = recorder('answer_document_question')
+    inst.recall_memory = recorder('recall_memory')
 
     class FakeMail:
         def __init__(self):
@@ -403,3 +404,71 @@ def test_declined_email_reply_never_sends(v):
     v.execute('no thanks')
     assert v.mail.sent == []
     assert v.awaiting_confirmation is None
+
+
+# ---------- conversation memory recall ----------
+
+def test_recall_memory_reaches_the_real_recall_memory_method(v):
+    v.execute('do you remember my favorite color')
+    _, args, _ = last_call(v, 'recall_memory')
+    assert args == ('my favorite color',)
+
+
+def test_recall_memory_alternate_phrasing(v):
+    v.execute('what did i tell you about the project deadline')
+    _, args, _ = last_call(v, 'recall_memory')
+    assert args == ('the project deadline',)
+
+
+# ---------- Vortex.recall_memory itself (not mocked by the `v` fixture above,
+# which replaces it with a recorder to test dispatch only) ----------
+
+def test_recall_memory_degrades_gracefully_when_rag_unavailable():
+    inst = Vortex()
+    inst.spoken = []
+    inst.speak = lambda text: inst.spoken.append(text)
+    inst.rag = None
+    inst.recall_memory('anything')
+    assert any("can't search past conversations" in s for s in inst.spoken)
+    inst.memory.close()
+
+
+def test_recall_memory_search_failure_degrades_gracefully():
+    class BoomRag:
+        def search_turns(self, query):
+            raise RuntimeError('qdrant down')
+    inst = Vortex()
+    inst.spoken = []
+    inst.speak = lambda text: inst.spoken.append(text)
+    inst.rag = BoomRag()
+    inst.recall_memory('anything')
+    assert any("couldn't search my memory" in s for s in inst.spoken)
+    inst.memory.close()
+
+
+def test_recall_memory_no_relevant_turns_says_so():
+    class EmptyRag:
+        def search_turns(self, query):
+            return []
+    inst = Vortex()
+    inst.spoken = []
+    inst.speak = lambda text: inst.spoken.append(text)
+    inst.rag = EmptyRag()
+    inst.recall_memory('anything')
+    assert inst.spoken == ["I don't have anything relevant in memory about that."]
+    inst.memory.close()
+
+
+def test_recall_memory_with_results_answers_via_the_llm():
+    class FakeRag:
+        def search_turns(self, query):
+            return [{'role': 'user', 'content': 'I like Rust'}]
+    inst = Vortex()
+    inst.spoken = []
+    inst.speak = lambda text: inst.spoken.append(text)
+    inst.speak_stream = lambda gen: inst.spoken.append(''.join(gen))
+    inst.rag = FakeRag()
+    inst._stream_llm_answer = lambda system_prompt, user_content: iter([f'ANSWER[{user_content[:20]}]'])
+    inst.recall_memory('what language do I like')
+    assert any(s.startswith('ANSWER[') for s in inst.spoken)
+    inst.memory.close()

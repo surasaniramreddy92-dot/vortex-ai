@@ -77,6 +77,13 @@ def test_reply_to_email_prompt():
         target='the meeting email', instruction='i confirm')
 
 
+def test_recall_memory_phrasings():
+    assert ir.route('do you remember my favorite color') == ir.RecallMemory(query='my favorite color')
+    assert ir.route('what did i tell you about the project') == ir.RecallMemory(query='the project')
+    assert ir.route('recall what i said about the meeting') == ir.RecallMemory(
+        query='what i said about the meeting')
+
+
 def test_youtube_all_three_phrasings():
     assert ir.route('youtube play some song') == ir.PlayYoutube(query='some song')
     assert ir.route('play some song on youtube') == ir.PlayYoutube(query='some song')
