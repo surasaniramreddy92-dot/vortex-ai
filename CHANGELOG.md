@@ -107,6 +107,38 @@ user explicitly asking for all of that when demonstrating itself.
 - 12 new unit tests (`test_self_knowledge.py`, `test_memory.py`), full
   regression suite stayed green throughout.
 
+### Fixed (same day, direct user report: "barge-in fails during the demonstration")
+
+Real log evidence, not a guess: the wake detector logged zero diagnostic
+scores - not even a low failed attempt - for the entire ~107 seconds of the
+(then-unbroken) self-introduction utterance. The instant VORTEX fell
+silent afterward, a wake attempt succeeded within milliseconds (score
+0.752, immediately triggered). This is this project's already-documented
+near-field self-noise limitation (VORTEX's own voice masking the mic - see
+`tts_volume`'s docstring), but no feature had ever produced continuous
+speech this long in one unbroken block before, so nothing had stress-tested
+it this severely.
+
+- `core/self_knowledge.py`'s `build_demo_segments()` now returns the five
+  topics as a list instead of one joined string (`build_demo_speech()`
+  kept, now just `' '.join()` of the same list, for callers that want the
+  full text).
+- `Vortex.demonstrate_self()` speaks each segment as its own utterance with
+  a real, configurable pause between them (`VortexConfig.demo_segment_pause`
+  / `VORTEX_DEMO_SEGMENT_PAUSE`, default 0.6s - a judgment call, not
+  independently re-derived through repeated trials the way `wake_threshold`
+  was) and checks `stop_speaking` between segments, so a barge-in
+  registered after one topic stops the rest of the introduction instead of
+  continuing regardless.
+- Honest scope: doesn't fix the underlying acoustic problem (true acoustic
+  echo cancellation still isn't implemented) - gives the wake model several
+  genuine quiet windows across the introduction instead of zero.
+  Live-verified the pauses are real (~0.59-0.61s measured gaps between
+  segment calls); the *acoustic* improvement itself needs the user's real
+  microphone to confirm, not something checkable from this environment.
+- 5 new/updated unit tests, full regression suite (344 passed, 1 hardware
+  deselected) stayed green.
+
 ## 2026-08-19 (continued into 2026-08-20)
 
 ### Added — security, memory retrieval, tool-calling (in that priority order, per direct user request to finish all three as fast as honestly possible)

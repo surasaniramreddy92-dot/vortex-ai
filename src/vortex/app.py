@@ -8,6 +8,7 @@ import logging
 import os
 import queue
 import threading
+import time
 
 import pygame
 import speech_recognition as sr
@@ -64,6 +65,7 @@ USER_NAME = _cfg.user_name
 ACTIVATION_RESPONSE = _cfg.activation_response
 BARGE_IN_RESPONSE = _cfg.barge_in_response
 PERSONALITY_MODE_DEFAULT = personality.PersonalityMode(_cfg.personality_mode)
+DEMO_SEGMENT_PAUSE = _cfg.demo_segment_pause
 TTS_VOLUME = _cfg.tts_volume
 # Custom-trained model (tools/wakeword/build_hey_vortex.py) so the phrase matches the assistant's name.
 WAKE_WORD = _cfg.wake_word
@@ -397,8 +399,19 @@ class Vortex:
         (llama3.2:1b could not reliably synthesize multiple real facts into
         one coherent answer; a deterministic, complete, hand-composed
         introduction beat an unreliable LLM-narrated one for a request that
-        explicitly needs to cover several topics)."""
-        self.speak(self_knowledge.build_demo_speech(self.memory.stats()))
+        explicitly needs to cover several topics).
+
+        Spoken as separate topic segments with a real pause between them,
+        not one continuous utterance - see build_demo_segments()'s docstring
+        for the barge-in problem this addresses. Stops between segments
+        (not just mid-segment, which self.speak() already handles) the
+        moment a barge-in has been registered, rather than plowing through
+        every remaining topic regardless."""
+        for segment in self_knowledge.build_demo_segments(self.memory.stats()):
+            if self.stop_speaking.is_set():
+                return
+            self.speak(segment)
+            time.sleep(DEMO_SEGMENT_PAUSE)
 
     # ---------- documents ----------
 

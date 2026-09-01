@@ -93,12 +93,36 @@ def describe_relationship(memory_stats):
         f" since {memory_stats['first_turn_at']}." if memory_stats['first_turn_at'] else '.')
 
 
+def build_demo_segments(memory_stats):
+    """The complete self-introduction as separate topic segments, in speaking
+    order - NOT one joined string. app.py's demonstrate_self() speaks each
+    segment as its own utterance with a real pause in between, rather than
+    one continuous ~107-second monologue.
+
+    Why this matters, live-tested 2026-09-01: the wake detector logged ZERO
+    diagnostic scores - not even a low, failed attempt - for the entire
+    duration of a single unbroken demo utterance, while a wake attempt made
+    the instant VORTEX fell silent afterward succeeded within milliseconds
+    (score 0.752, immediately triggered). This is this project's
+    already-documented near-field self-noise limitation (VORTEX's own voice
+    masking the mic - see config.py's tts_volume docstring), but no other
+    feature had ever produced speech this long in one unbroken block before,
+    so nothing had stress-tested it this severely. Splitting into segments
+    with real silent gaps between them doesn't fix the underlying acoustic
+    problem (true acoustic echo cancellation isn't implemented - see
+    KNOWN_DRAWBACKS), but it gives the wake model several genuine quiet
+    windows across the introduction instead of none at all."""
+    return [
+        CAPABILITIES_SUMMARY,
+        BUILD_STORY,
+        describe_relationship(memory_stats),
+        FUTURE_PLANS,
+        KNOWN_DRAWBACKS,
+    ]
+
+
 def build_demo_speech(memory_stats):
-    """The complete, deterministic self-introduction - one flowing,
-    hand-composed paragraph covering every topic "demonstrate yourself"
-    needs to explain, spoken as-is (no LLM pass) for the reliability
-    reasons in this module's docstring."""
-    return (
-        f"{CAPABILITIES_SUMMARY} {BUILD_STORY} {describe_relationship(memory_stats)} "
-        f"{FUTURE_PLANS} {KNOWN_DRAWBACKS}"
-    )
+    """The same content as build_demo_segments(), joined into one string -
+    kept for callers that want the full text as a single value (e.g. a
+    length/content check in a test), not for speaking aloud in one piece."""
+    return ' '.join(build_demo_segments(memory_stats))

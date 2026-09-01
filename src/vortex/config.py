@@ -103,6 +103,18 @@ class VortexConfig:
     # state that starts from a fixed default, not itself a config field).
     personality_mode: str = field(
         default_factory=lambda: os.getenv('VORTEX_PERSONALITY_MODE', 'professional'))
+    # Silent gap between demonstrate_self()'s topic segments (app.py) - added
+    # 2026-09-01 on live evidence: the wake detector logged zero diagnostic
+    # scores for the entire ~107s of a single unbroken self-introduction
+    # utterance, while a wake attempt made the instant VORTEX fell silent
+    # afterward succeeded within milliseconds. No other feature had ever
+    # produced continuous speech this long before, so nothing had stress-
+    # tested the existing near-field self-noise limitation (see tts_volume
+    # below) this severely. 0.6s is a judgment call, not independently
+    # re-derived through repeated real trials the way wake_threshold below
+    # was - revisit if barge-in during a demonstration is still unreliable.
+    demo_segment_pause: float = field(
+        default_factory=lambda: _float_env('VORTEX_DEMO_SEGMENT_PAUSE', 0.6))
     # On laptops the mic and speakers sit close together, so VORTEX's own voice
     # dominates whatever the mic hears while it's talking - a real barge-in
     # failure traced to this: real diagnostic logs showed zero wake-model score

@@ -127,19 +127,44 @@ def test_set_personality_mode_dispatches_and_confirms(v):
     assert v.spoken == ['Switched to Friendly mode.']
 
 
-def test_demonstrate_yourself_confirms_and_demonstrates(v):
+def test_demonstrate_yourself_confirms_and_demonstrates(v, monkeypatch):
     """Entering DEMO mode specifically also gives the real self-
     demonstration content (Vortex.demonstrate_self), not just the mode-
     switch confirmation every other mode gets. demonstrate_self() speaks
     directly (no LLM call - see core/self_knowledge.py's module docstring
     for why), so this is a fast, network-free dispatch test as-is; the real
-    content itself is covered by test_self_knowledge.py."""
+    content itself is covered by test_self_knowledge.py. time.sleep is
+    mocked so the real inter-segment pause (config.py's demo_segment_pause,
+    added for the barge-in fix - see app.py's demonstrate_self()) doesn't
+    slow this test down."""
     from vortex.core.personality import PersonalityMode
+    monkeypatch.setattr('vortex.app.time.sleep', lambda seconds: None)
     v.execute('demonstrate yourself')
     assert v.personality_mode == PersonalityMode.DEMO
-    assert len(v.spoken) == 2
+    assert len(v.spoken) == 6  # confirmation + 5 topic segments
     assert v.spoken[0] == 'Switched to Demo mode.'
     assert 'I can control your desktop' in v.spoken[1]
+
+
+def test_demonstrate_yourself_stops_between_segments_on_barge_in(v, monkeypatch):
+    """The added stop_speaking check between segments (not just mid-segment,
+    which self.speak() already handled) - a barge-in registered after the
+    first segment must stop the rest of the introduction, not plow through
+    every remaining topic regardless."""
+    monkeypatch.setattr('vortex.app.time.sleep', lambda seconds: None)
+    real_speak = v.speak
+    call_count = {'n': 0}
+
+    def speak_then_barge_in_after_first(text):
+        call_count['n'] += 1
+        real_speak(text)
+        if call_count['n'] == 1:
+            v.barge_in.stop_speaking.set()
+    v.speak = speak_then_barge_in_after_first
+
+    v.demonstrate_self()
+    assert len(v.spoken) == 1
+    v.barge_in.stop_speaking.clear()
 
 
 def test_time(v):

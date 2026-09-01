@@ -15,7 +15,7 @@ sys.path.insert(0, __file__.rsplit('tests', 1)[0] + 'src')
 from vortex.core import intent_router as intents
 from vortex.core.self_knowledge import (
     BUILD_STORY, CAPABILITIES_SUMMARY, FUTURE_PLANS, KNOWN_DRAWBACKS,
-    build_demo_speech, describe_relationship, list_capabilities,
+    build_demo_segments, build_demo_speech, describe_relationship, list_capabilities,
 )
 
 
@@ -77,6 +77,29 @@ def test_build_demo_speech_is_a_single_complete_string_not_truncated():
     speech = build_demo_speech({'turn_count': 0, 'first_turn_at': None})
     assert speech.endswith('.')
     assert len(speech) > 200
+
+
+def test_build_demo_segments_returns_five_separate_topics_not_one_string():
+    """app.py's demonstrate_self() speaks each of these as its own
+    utterance with a real pause in between - see this function's own
+    docstring for the live-tested barge-in reason a single joined
+    ~107-second utterance is no longer used for speaking."""
+    segments = build_demo_segments({'turn_count': 5, 'first_turn_at': '2026-09-01 08:00:00'})
+    assert len(segments) == 5
+    assert CAPABILITIES_SUMMARY in segments
+    assert BUILD_STORY in segments
+    assert FUTURE_PLANS in segments
+    assert KNOWN_DRAWBACKS in segments
+
+
+def test_build_demo_segments_reflects_real_memory_stats():
+    segments = build_demo_segments({'turn_count': 42, 'first_turn_at': None})
+    assert any('42' in segment for segment in segments)
+
+
+def test_build_demo_speech_matches_segments_joined():
+    stats = {'turn_count': 7, 'first_turn_at': None}
+    assert build_demo_speech(stats) == ' '.join(build_demo_segments(stats))
 
 
 def test_capabilities_summary_does_not_overclaim_vision():
