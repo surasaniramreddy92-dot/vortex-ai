@@ -127,6 +127,14 @@ def test_set_personality_mode_dispatches_and_confirms(v):
     assert v.spoken == ['Switched to Friendly mode.']
 
 
+def test_what_makes_you_different_speaks_the_real_grounded_answer(v):
+    """No LLM call at all (see core/self_knowledge.py's DIFFERENTIATION_SUMMARY
+    docstring for the fabrication this replaces) - a direct, real speak()."""
+    from vortex.core.self_knowledge import DIFFERENTIATION_SUMMARY
+    v.execute('what makes you different from other assistants')
+    assert v.spoken == [DIFFERENTIATION_SUMMARY]
+
+
 def test_demonstrate_yourself_confirms_and_demonstrates(v, monkeypatch):
     """Entering DEMO mode specifically also gives the real self-
     demonstration content (Vortex.demonstrate_self), not just the mode-

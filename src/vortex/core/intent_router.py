@@ -47,6 +47,20 @@ class SetPersonalityMode:
 
 
 @dataclass(frozen=True)
+class WhatMakesYouDifferent:
+    """Added 2026-09-01 - direct user finding: asked "what makes you
+    different from other assistants" with no dedicated handling, the plain
+    LLM fallback fabricated a claim VORTEX doesn't have ("I possess a
+    unique ability to understand and respond to subtle emotional cues") -
+    a real hallucination, not just an unimpressive answer. Routes to a
+    short, honest, grounded answer (core/self_knowledge.py's
+    DIFFERENTIATION_SUMMARY) instead of letting the model invent one."""
+    name: ClassVar[str] = 'what_makes_you_different'
+    destructive: ClassVar[bool] = False
+    description: ClassVar[str] = 'Answer what makes VORTEX different from other assistants, honestly.'
+
+
+@dataclass(frozen=True)
 class SpeakTime:
     name: ClassVar[str] = 'time'
     destructive: ClassVar[bool] = False
@@ -270,8 +284,8 @@ class Unhandled:
 # (every type reachable, every name unique) without hand-maintaining a
 # second, separate list that could drift from the real routing order.
 ALL_INTENT_TYPES = (
-    ShutdownVortex, StandDown, SetPersonalityMode, SpeakTime, SpeakDate, CloseAllPrompt,
-    RestartPrompt, ShutdownPrompt, Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail,
+    ShutdownVortex, StandDown, SetPersonalityMode, WhatMakesYouDifferent, SpeakTime, SpeakDate,
+    CloseAllPrompt, RestartPrompt, ShutdownPrompt, Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail,
     ReplyToEmailPrompt, RecallMemory, PlayYoutube, SearchFiles, WebSearch, Browse, Click,
     ListFiles, DeleteFilePrompt, MoveFilePrompt, CopyFile, RenameFilePrompt, CloseApp,
     OpenTarget, DocumentQuestion, SummarizeDocument, ReadDocument, Unhandled,
@@ -294,8 +308,25 @@ _SET_PERSONALITY_MODE = re.compile(
 # scripted capabilities recital (deliberately out of scope, see
 # capability_registry.py's _set_personality_mode and personality.py's
 # module docstring for why).
+#
+# Every branch requires an explicit "yourself"/"what you can do" object -
+# live evidence (2026-09-01) found "can you give a demonstration on that"
+# (a follow-up asking VORTEX to back up its own PREVIOUS claim, not asking
+# for a self-introduction) matched a looser "give a demo(nstration)" bare
+# pattern and hijacked into the full 13-sentence self-introduction,
+# completely ignoring what "that" referred to. A bare "demonstrate"/"give a
+# demonstration" with no object must fall through to the LLM as an ordinary
+# follow-up question, not be assumed to mean "introduce yourself again."
 _DEMO_TRIGGER = re.compile(
-    r'\b(?:demonstrate yourself|show (?:me )?what you can do|give (?:me )?a demo(?:nstration)?)\b')
+    r'\b(?:demonstrate yourself|show (?:me )?what you can do|'
+    r'give (?:me )?a demo(?:nstration)? of (?:yourself|what you can do))\b')
+# Checked before the demo trigger above so "what makes you different" isn't
+# accidentally caught by anything broader, and answers with a real, honest
+# fact instead of letting the plain LLM fallback invent one - see
+# WhatMakesYouDifferent's own docstring for the exact fabrication this
+# replaces.
+_WHAT_MAKES_YOU_DIFFERENT = re.compile(
+    r"\bwhat (?:makes|make) you (?:different|unique|special)\b|\bhow are you different\b")
 _TIME = re.compile(r'\btime\b')
 _DATE = re.compile(r'\bdate\b')
 _LOCK = re.compile(r'\block\b.*\b(?:system|computer|screen|pc)\b')
@@ -337,6 +368,8 @@ def route(cmd):
     m = _SET_PERSONALITY_MODE.match(cmd)
     if m:
         return SetPersonalityMode(mode=m.group(1))
+    if _WHAT_MAKES_YOU_DIFFERENT.search(cmd):
+        return WhatMakesYouDifferent()
     if _DEMO_TRIGGER.search(cmd):
         return SetPersonalityMode(mode='demo')
     if _TIME.search(cmd):

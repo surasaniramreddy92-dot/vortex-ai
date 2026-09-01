@@ -12,6 +12,7 @@ import datetime
 
 from . import intent_router as intents
 from . import personality
+from . import self_knowledge
 from .. import files as fileops
 from .. import popup
 from .. import screen as screen_reader
@@ -30,6 +31,7 @@ class CapabilityRegistry:
             intents.ShutdownVortex: self._shutdown_vortex,
             intents.StandDown: self._stand_down,
             intents.SetPersonalityMode: self._set_personality_mode,
+            intents.WhatMakesYouDifferent: self._what_makes_you_different,
             intents.SpeakTime: self._speak_time,
             intents.SpeakDate: self._speak_date,
             intents.CloseAllPrompt: self._close_all_prompt,
@@ -95,6 +97,14 @@ class CapabilityRegistry:
         # beyond the confirmation above - this is deliberately DEMO-only.
         if mode is personality.PersonalityMode.DEMO:
             self.host.demonstrate_self()
+
+    def _what_makes_you_different(self, intent):
+        """Speaks core/self_knowledge.py's DIFFERENTIATION_SUMMARY directly
+        - no LLM call - so this question gets a real, honest answer instead
+        of the plain LLM fallback's live-observed tendency to invent one
+        (see WhatMakesYouDifferent's own docstring for the exact
+        fabrication this replaces)."""
+        self.host.speak(self_knowledge.DIFFERENTIATION_SUMMARY)
 
     def _speak_time(self, intent):
         self.host.speak(f"The current time is {datetime.datetime.now().strftime('%I:%M %p')}")

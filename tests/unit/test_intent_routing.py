@@ -48,8 +48,37 @@ def test_demonstrate_yourself_triggers_demo_mode():
     assert ir.route('can you demonstrate yourself') == ir.SetPersonalityMode(mode='demo')
     assert ir.route('show me what you can do') == ir.SetPersonalityMode(mode='demo')
     assert ir.route('show what you can do') == ir.SetPersonalityMode(mode='demo')
-    assert ir.route('give me a demo') == ir.SetPersonalityMode(mode='demo')
-    assert ir.route('give a demonstration') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('give me a demo of yourself') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('give a demonstration of what you can do') == ir.SetPersonalityMode(mode='demo')
+
+
+def test_bare_demo_request_with_no_object_does_not_trigger_self_introduction():
+    """Direct user finding (2026-09-01): "can you give a demonstration on
+    that" - a follow-up asking VORTEX to back up its own PREVIOUS claim,
+    not asking for a self-introduction - matched a looser "give a
+    demo(nstration)" bare pattern and hijacked into the full 13-sentence
+    self-introduction, ignoring what "that" referred to. A bare
+    "demonstrate"/"give a demo(nstration)" with no "yourself"/"what you can
+    do" object must fall through to the LLM as an ordinary follow-up
+    question instead."""
+    assert isinstance(ir.route('can you give a demonstration on that'), ir.Unhandled)
+    assert isinstance(ir.route('give me a demo'), ir.Unhandled)
+    assert isinstance(ir.route('give a demonstration'), ir.Unhandled)
+    assert isinstance(ir.route('demonstrate that statement'), ir.Unhandled)
+    assert isinstance(ir.route('can you demonstrate that'), ir.Unhandled)
+
+
+def test_what_makes_you_different_gets_a_real_answer_not_the_llm():
+    """Direct user finding (2026-09-01): asked "what makes you different
+    from other assistants" with no dedicated handling, the plain LLM
+    fallback fabricated "I possess a unique ability to understand and
+    respond to subtle emotional cues" - a capability VORTEX doesn't have.
+    Must route to a real, honest, grounded answer instead."""
+    assert ir.route('what makes you different from other assistants') == ir.WhatMakesYouDifferent()
+    assert ir.route('what makes you different from other assistance') == ir.WhatMakesYouDifferent()
+    assert ir.route('what makes you unique') == ir.WhatMakesYouDifferent()
+    assert ir.route('what makes you special') == ir.WhatMakesYouDifferent()
+    assert ir.route('how are you different') == ir.WhatMakesYouDifferent()
 
 
 def test_time():

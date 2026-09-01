@@ -159,6 +159,31 @@ real gap, all from inside that one topic-level segment.
 - 2 more updated unit tests, full regression suite (345 passed, 1 hardware
   deselected) stayed green.
 
+### Fixed (two more real bugs, same day, direct user re-testing)
+
+- **Follow-up question hijacked into the full self-introduction**: "can you
+  give a demonstration on that" (referring to VORTEX's own PREVIOUS
+  answer) matched a too-loose `_DEMO_TRIGGER` bare pattern ("give a
+  demo(nstration)" with no object) and restarted the entire 13-sentence
+  self-introduction, completely ignoring what "that" referred to. Fixed by
+  requiring an explicit "of yourself"/"of what you can do" object on that
+  branch - a bare "demonstrate"/"give a demonstration" now correctly falls
+  through to the LLM as an ordinary follow-up instead of being assumed to
+  mean "introduce yourself again."
+- **"What makes you different" hallucinated a fake capability**: asked
+  with no dedicated handling, the plain LLM fallback fabricated *"I
+  possess a unique ability to understand and respond to subtle emotional
+  cues"* - not a real VORTEX capability. New `WhatMakesYouDifferent` intent
+  routes this to `core/self_knowledge.py`'s new `DIFFERENTIATION_SUMMARY`
+  instead - spoken directly, no LLM call, every claim independently
+  checkable against the actual codebase (local model, tested code with
+  public history, docs that say "Partial" instead of overclaiming) rather
+  than generic assistant-marketing language.
+- Live-verified end to end: the real, honest answer is now given, and the
+  follow-up phrase confirmed to no longer touch `personality_mode`.
+- 6 new/updated unit tests, full regression suite (350 passed, 1 hardware
+  deselected) stayed green.
+
 ## 2026-08-19 (continued into 2026-08-20)
 
 ### Added — security, memory retrieval, tool-calling (in that priority order, per direct user request to finish all three as fast as honestly possible)

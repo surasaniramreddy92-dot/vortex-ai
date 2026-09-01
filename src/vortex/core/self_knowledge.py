@@ -57,6 +57,7 @@ _SENTENCE_SPLIT = re.compile(r'(?<=[.!?]) +')
 def _sentences(text):
     return _SENTENCE_SPLIT.split(text)
 
+
 CAPABILITIES_SUMMARY = (
     "I can control your desktop - opening and closing applications, locking "
     "the workstation, and shutting down or restarting the system with your "
@@ -91,6 +92,24 @@ FUTURE_PLANS = (
     "instead of only responding when spoken to, expanding communication "
     "beyond email, and eventually a multi-agent design where different "
     "models handle different kinds of requests."
+)
+
+# Added 2026-09-01 - see WhatMakesYouDifferent's docstring in
+# intent_router.py for the exact fabrication this replaces ("I possess a
+# unique ability to understand and respond to subtle emotional cues" - not
+# a real capability). Honest and specific on purpose, not generic
+# assistant-marketing language: every claim here is independently checkable
+# against this actual codebase (a local Ollama model, a real test suite,
+# documentation that says "Partial" instead of overclaiming) rather than
+# something a model would say about any generic assistant.
+DIFFERENTIATION_SUMMARY = (
+    "Unlike most assistants, I run entirely on your own machine, on a local "
+    "language model - no cloud subscription, and your conversations don't "
+    "leave this computer by default. I'm built from real, tested code with "
+    "a public commit history, not a black box, and my own documentation "
+    "marks features as partial or in progress rather than pretending "
+    "everything works. I'd rather tell you honestly what I can't do yet "
+    "than make something up."
 )
 
 

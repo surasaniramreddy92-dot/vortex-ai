@@ -14,7 +14,7 @@ sys.path.insert(0, __file__.rsplit('tests', 1)[0] + 'src')
 
 from vortex.core import intent_router as intents
 from vortex.core.self_knowledge import (
-    BUILD_STORY, CAPABILITIES_SUMMARY, FUTURE_PLANS, KNOWN_DRAWBACKS,
+    BUILD_STORY, CAPABILITIES_SUMMARY, DIFFERENTIATION_SUMMARY, FUTURE_PLANS, KNOWN_DRAWBACKS,
     build_demo_segments, build_demo_speech, describe_relationship, list_capabilities,
 )
 
@@ -109,6 +109,26 @@ def test_build_demo_segments_no_sentence_is_multiple_sentences():
         interior = segment.rstrip('.!? ')
         assert not any(mark in interior for mark in '.!?'), (
             f'segment contains more than one sentence: {segment!r}')
+
+
+def test_differentiation_summary_does_not_repeat_the_known_fabrication():
+    """Direct user finding (2026-09-01): the plain LLM fallback, asked what
+    makes VORTEX different, fabricated "I possess a unique ability to
+    understand and respond to subtle emotional cues" - a capability VORTEX
+    doesn't have. This real, honest replacement must never claim it."""
+    lowered = DIFFERENTIATION_SUMMARY.lower()
+    assert 'emotional' not in lowered
+    assert 'subtle' not in lowered
+
+
+def test_differentiation_summary_is_specific_not_generic_marketing():
+    """Every claim should be something a generic assistant couldn't equally
+    say - grounded in this actual project (local model, tested code,
+    honest docs), not vague self-praise."""
+    lowered = DIFFERENTIATION_SUMMARY.lower()
+    assert 'local' in lowered
+    assert 'tested' in lowered or 'test' in lowered
+    assert 'honest' in lowered or 'partial' in lowered
 
 
 def test_build_demo_segments_reflects_real_memory_stats():
