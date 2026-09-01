@@ -30,8 +30,32 @@ factual content IMPLEMENTED.md/CHANGELOG.md already hold themselves to -
 not "canned jokes" (the kind of content the feature spec explicitly ruled
 out for personality.py's tone directives), a factual project summary a
 human maintains and updates as things actually change.
+
+**Barge-in, round two.** The first fix here (same day) grouped these four
+constants into five TOPIC-level segments, each spoken with a pause after
+it. Still failed on direct user re-test: CAPABILITIES_SUMMARY alone is six
+sentences (~25-30s of continuous speech, since it's the constant a user
+naturally tries to interrupt first), and the pause only ever landed
+*between* topics, never within one - the log showed six "Speaking:" lines
+fire back-to-back with no real gap, all from inside that single topic
+block. build_demo_segments() now splits every constant down to individual
+SENTENCES (see _sentences()), so the pause lands after literally every
+sentence spoken, not just every topic.
 """
+import re
+
 from . import intent_router as intents
+
+# Splits after a sentence-ending punctuation mark followed by whitespace,
+# keeping the mark attached to the sentence before it - used by
+# build_demo_segments() to break every multi-sentence constant below down
+# to one sentence per spoken segment (see that function's docstring for why
+# topic-level granularity alone wasn't enough).
+_SENTENCE_SPLIT = re.compile(r'(?<=[.!?]) +')
+
+
+def _sentences(text):
+    return _SENTENCE_SPLIT.split(text)
 
 CAPABILITIES_SUMMARY = (
     "I can control your desktop - opening and closing applications, locking "
@@ -94,31 +118,32 @@ def describe_relationship(memory_stats):
 
 
 def build_demo_segments(memory_stats):
-    """The complete self-introduction as separate topic segments, in speaking
-    order - NOT one joined string. app.py's demonstrate_self() speaks each
-    segment as its own utterance with a real pause in between, rather than
-    one continuous ~107-second monologue.
+    """The complete self-introduction as separate SENTENCE-level segments, in
+    speaking order - NOT one joined string, and NOT one entry per broad
+    topic either. app.py's demonstrate_self() speaks each segment as its
+    own utterance with a real pause after every one, rather than one
+    continuous ~107-second monologue.
 
-    Why this matters, live-tested 2026-09-01: the wake detector logged ZERO
-    diagnostic scores - not even a low, failed attempt - for the entire
-    duration of a single unbroken demo utterance, while a wake attempt made
-    the instant VORTEX fell silent afterward succeeded within milliseconds
-    (score 0.752, immediately triggered). This is this project's
-    already-documented near-field self-noise limitation (VORTEX's own voice
-    masking the mic - see config.py's tts_volume docstring), but no other
-    feature had ever produced speech this long in one unbroken block before,
-    so nothing had stress-tested it this severely. Splitting into segments
-    with real silent gaps between them doesn't fix the underlying acoustic
-    problem (true acoustic echo cancellation isn't implemented - see
-    KNOWN_DRAWBACKS), but it gives the wake model several genuine quiet
-    windows across the introduction instead of none at all."""
-    return [
-        CAPABILITIES_SUMMARY,
-        BUILD_STORY,
-        describe_relationship(memory_stats),
-        FUTURE_PLANS,
-        KNOWN_DRAWBACKS,
-    ]
+    Why per-SENTENCE, not just per-topic, live-tested 2026-09-01: the first
+    fix here grouped by topic (CAPABILITIES_SUMMARY/BUILD_STORY/etc. as five
+    segments) and still failed - CAPABILITIES_SUMMARY alone is six
+    sentences (~25-30s of continuous speech with zero internal breaks), and
+    a real barge-in attempt made during exactly that block still got
+    nothing: the log showed six "Speaking:" lines fire back-to-back with no
+    real gap between them, all from *inside* that one topic-level segment,
+    because the pause only ever landed *between* topics, never within one.
+    Splitting every constant down to individual sentences means the pause
+    lands after literally every sentence spoken, including within what used
+    to be one long topic block.
+
+    None of this fixes the underlying acoustic problem (true acoustic echo
+    cancellation isn't implemented - see KNOWN_DRAWBACKS) - VORTEX's own
+    voice still masks the mic while any one sentence is actually playing.
+    It gives the wake model many more genuine quiet windows across the
+    introduction than either previous version did."""
+    topics = [CAPABILITIES_SUMMARY, BUILD_STORY, describe_relationship(memory_stats),
+              FUTURE_PLANS, KNOWN_DRAWBACKS]
+    return [sentence for topic in topics for sentence in _sentences(topic)]
 
 
 def build_demo_speech(memory_stats):

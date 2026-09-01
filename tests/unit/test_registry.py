@@ -139,9 +139,11 @@ def test_demonstrate_yourself_confirms_and_demonstrates(v, monkeypatch):
     slow this test down."""
     from vortex.core.personality import PersonalityMode
     monkeypatch.setattr('vortex.app.time.sleep', lambda seconds: None)
+    from vortex.core import self_knowledge
     v.execute('demonstrate yourself')
     assert v.personality_mode == PersonalityMode.DEMO
-    assert len(v.spoken) == 6  # confirmation + 5 topic segments
+    expected_sentence_count = len(self_knowledge.build_demo_segments(v.memory.stats()))
+    assert len(v.spoken) == 1 + expected_sentence_count  # confirmation + one per sentence
     assert v.spoken[0] == 'Switched to Demo mode.'
     assert 'I can control your desktop' in v.spoken[1]
 

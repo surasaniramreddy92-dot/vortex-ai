@@ -139,6 +139,26 @@ it this severely.
 - 5 new/updated unit tests, full regression suite (344 passed, 1 hardware
   deselected) stayed green.
 
+### Fixed (still failed on real re-test, same day - "still doesn't process")
+
+The fix above only paused *between* the five broad topics. `CAPABILITIES_SUMMARY`
+alone is six sentences (~25-30s of continuous speech, zero internal breaks)
+- exactly the block a user naturally tries to interrupt first. Real log
+evidence confirmed it: six "Speaking:" lines fired back-to-back with no
+real gap, all from inside that one topic-level segment.
+
+- `core/self_knowledge.py`'s `build_demo_segments()` now splits every
+  constant down to individual sentences (`_sentences()`, a small regex)
+  instead of five topic blocks - 13 sentences total, each getting its own
+  pause, not just 5 topics.
+- Live-verified the real segment count (13) and ~0.59-0.61s gaps after
+  every sentence, not just between topics.
+- Same honest caveat as before: doesn't fix the underlying acoustic
+  problem, just gives many more genuine quiet windows than either previous
+  version.
+- 2 more updated unit tests, full regression suite (345 passed, 1 hardware
+  deselected) stayed green.
+
 ## 2026-08-19 (continued into 2026-08-20)
 
 ### Added — security, memory retrieval, tool-calling (in that priority order, per direct user request to finish all three as fast as honestly possible)

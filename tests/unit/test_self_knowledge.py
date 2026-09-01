@@ -79,17 +79,36 @@ def test_build_demo_speech_is_a_single_complete_string_not_truncated():
     assert len(speech) > 200
 
 
-def test_build_demo_segments_returns_five_separate_topics_not_one_string():
+def test_build_demo_segments_returns_one_entry_per_sentence_not_per_topic():
     """app.py's demonstrate_self() speaks each of these as its own
-    utterance with a real pause in between - see this function's own
-    docstring for the live-tested barge-in reason a single joined
-    ~107-second utterance is no longer used for speaking."""
+    utterance with a real pause after every one - see this function's own
+    docstring for why topic-level granularity alone wasn't enough
+    (live-tested: CAPABILITIES_SUMMARY alone is six sentences, and a
+    barge-in attempt made during it got nothing when the pause only landed
+    between topics)."""
     segments = build_demo_segments({'turn_count': 5, 'first_turn_at': '2026-09-01 08:00:00'})
-    assert len(segments) == 5
-    assert CAPABILITIES_SUMMARY in segments
-    assert BUILD_STORY in segments
+    # None of the multi-sentence constants should appear whole - each must
+    # have been split into its individual sentences.
+    assert CAPABILITIES_SUMMARY not in segments
+    assert BUILD_STORY not in segments
+    assert KNOWN_DRAWBACKS not in segments
+    # FUTURE_PLANS is a single sentence already, so it DOES appear as-is.
     assert FUTURE_PLANS in segments
-    assert KNOWN_DRAWBACKS in segments
+    assert len(segments) > 10, 'expected one segment per sentence, not per topic'
+    assert all(segment.strip().endswith(('.', '!', '?')) for segment in segments)
+
+
+def test_build_demo_segments_no_sentence_is_multiple_sentences():
+    """Every segment must itself be a single sentence - the whole point of
+    the sentence-level split - not a still-multi-sentence topic block."""
+    segments = build_demo_segments({'turn_count': 5, 'first_turn_at': '2026-09-01 08:00:00'})
+    for segment in segments:
+        # A real sentence-ending mark should appear only once, at the very
+        # end (allowing a trailing space) - more than one means this
+        # "segment" is still multiple sentences glued together.
+        interior = segment.rstrip('.!? ')
+        assert not any(mark in interior for mark in '.!?'), (
+            f'segment contains more than one sentence: {segment!r}')
 
 
 def test_build_demo_segments_reflects_real_memory_stats():

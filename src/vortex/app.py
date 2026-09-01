@@ -401,12 +401,13 @@ class Vortex:
         introduction beat an unreliable LLM-narrated one for a request that
         explicitly needs to cover several topics).
 
-        Spoken as separate topic segments with a real pause between them,
-        not one continuous utterance - see build_demo_segments()'s docstring
-        for the barge-in problem this addresses. Stops between segments
-        (not just mid-segment, which self.speak() already handles) the
-        moment a barge-in has been registered, rather than plowing through
-        every remaining topic regardless."""
+        Spoken as separate SENTENCE-level segments with a real pause after
+        every one, not one continuous utterance and not just one pause per
+        broad topic either - see build_demo_segments()'s docstring for why
+        topic-level granularity alone still failed a real barge-in attempt.
+        Stops between segments (not just mid-segment, which self.speak()
+        already handles) the moment a barge-in has been registered, rather
+        than plowing through every remaining sentence regardless."""
         for segment in self_knowledge.build_demo_segments(self.memory.stats()):
             if self.stop_speaking.is_set():
                 return
