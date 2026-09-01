@@ -112,7 +112,7 @@ def test_build_demo_segments_no_sentence_is_multiple_sentences():
 
 
 def test_differentiation_summary_does_not_repeat_the_known_fabrication():
-    """Direct user finding (2026-09-01): the plain LLM fallback, asked what
+    """Direct user finding (2026-09-02): the plain LLM fallback, asked what
     makes VORTEX different, fabricated "I possess a unique ability to
     understand and respond to subtle emotional cues" - a capability VORTEX
     doesn't have. This real, honest replacement must never claim it."""

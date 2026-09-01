@@ -48,7 +48,7 @@ class SetPersonalityMode:
 
 @dataclass(frozen=True)
 class WhatMakesYouDifferent:
-    """Added 2026-09-01 - direct user finding: asked "what makes you
+    """Added 2026-09-02 - direct user finding: asked "what makes you
     different from other assistants" with no dedicated handling, the plain
     LLM fallback fabricated a claim VORTEX doesn't have ("I possess a
     unique ability to understand and respond to subtle emotional cues") -
@@ -310,7 +310,7 @@ _SET_PERSONALITY_MODE = re.compile(
 # module docstring for why).
 #
 # Every branch requires an explicit "yourself"/"what you can do" object -
-# live evidence (2026-09-01) found "can you give a demonstration on that"
+# live evidence (2026-09-02) found "can you give a demonstration on that"
 # (a follow-up asking VORTEX to back up its own PREVIOUS claim, not asking
 # for a self-introduction) matched a looser "give a demo(nstration)" bare
 # pattern and hijacked into the full 13-sentence self-introduction,

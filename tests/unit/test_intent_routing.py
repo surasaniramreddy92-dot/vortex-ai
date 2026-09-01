@@ -53,7 +53,7 @@ def test_demonstrate_yourself_triggers_demo_mode():
 
 
 def test_bare_demo_request_with_no_object_does_not_trigger_self_introduction():
-    """Direct user finding (2026-09-01): "can you give a demonstration on
+    """Direct user finding (2026-09-02): "can you give a demonstration on
     that" - a follow-up asking VORTEX to back up its own PREVIOUS claim,
     not asking for a self-introduction - matched a looser "give a
     demo(nstration)" bare pattern and hijacked into the full 13-sentence
@@ -69,7 +69,7 @@ def test_bare_demo_request_with_no_object_does_not_trigger_self_introduction():
 
 
 def test_what_makes_you_different_gets_a_real_answer_not_the_llm():
-    """Direct user finding (2026-09-01): asked "what makes you different
+    """Direct user finding (2026-09-02): asked "what makes you different
     from other assistants" with no dedicated handling, the plain LLM
     fallback fabricated "I possess a unique ability to understand and
     respond to subtle emotional cues" - a capability VORTEX doesn't have.

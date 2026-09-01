@@ -94,7 +94,7 @@ FUTURE_PLANS = (
     "models handle different kinds of requests."
 )
 
-# Added 2026-09-01 - see WhatMakesYouDifferent's docstring in
+# Added 2026-09-02 - see WhatMakesYouDifferent's docstring in
 # intent_router.py for the exact fabrication this replaces ("I possess a
 # unique ability to understand and respond to subtle emotional cues" - not
 # a real capability). Honest and specific on purpose, not generic
