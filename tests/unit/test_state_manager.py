@@ -33,6 +33,30 @@ def test_speaking_takes_priority_over_active_session():
         == VortexState.SPEAKING
 
 
+# ---------- EXECUTING (Standby/Activation/Personality foundation, 2026-08-20) ----------
+
+def test_is_executing_only_is_executing():
+    assert current_state(is_speaking=lambda: False, is_in_active_session=lambda: False,
+                          is_executing=lambda: True) == VortexState.EXECUTING
+
+
+def test_executing_defaults_to_false_for_every_existing_caller():
+    """Purely additive parameter - every pre-existing call site that never
+    passes is_executing must behave exactly as before."""
+    assert current_state(is_speaking=lambda: False, is_in_active_session=lambda: False) \
+        == VortexState.STANDBY
+
+
+def test_speaking_takes_priority_over_executing():
+    assert current_state(is_speaking=lambda: True, is_in_active_session=lambda: False,
+                          is_executing=lambda: True) == VortexState.SPEAKING
+
+
+def test_executing_takes_priority_over_active_session():
+    assert current_state(is_speaking=lambda: False, is_in_active_session=lambda: True,
+                          is_executing=lambda: True) == VortexState.EXECUTING
+
+
 def test_computed_fresh_every_call_not_cached():
     flag = {'speaking': False}
     state = current_state(is_speaking=lambda: flag['speaking'], is_in_active_session=lambda: False)

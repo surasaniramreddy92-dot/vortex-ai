@@ -42,6 +42,19 @@ def test_defaults_match_main_py():
     assert cfg.postgres_dsn == 'dbname=vortex user=vortex password=vortex_local_dev host=localhost'
     assert cfg.qdrant_url == 'http://localhost:6333'
     assert cfg.embed_model == 'nomic-embed-text'
+    assert cfg.activation_response == 'Yes Boss?'
+    assert cfg.barge_in_response == "Yes Boss, I'm listening."
+    assert cfg.personality_mode == 'professional'
+
+
+def test_activation_and_personality_env_overrides(monkeypatch):
+    monkeypatch.setenv('VORTEX_ACTIVATION_RESPONSE', 'At your service.')
+    monkeypatch.setenv('VORTEX_BARGE_IN_RESPONSE', 'Interrupted, go ahead.')
+    monkeypatch.setenv('VORTEX_PERSONALITY_MODE', 'witty')
+    cfg = VortexConfig.from_env()
+    assert cfg.activation_response == 'At your service.'
+    assert cfg.barge_in_response == 'Interrupted, go ahead.'
+    assert cfg.personality_mode == 'witty'
 
 
 def test_root_dependent_paths_resolve_from_root():

@@ -36,6 +36,9 @@ from .platform.windows.protected_processes import PROTECTED_PROCESSES
 from .tools.system import apps as system_apps
 from .tools.system import process as system_process
 from .core import intent_router
+from .core import personality
+from .core import social_context
+from .core.owner_context import OwnerContext
 from .core.capability_registry import CapabilityRegistry
 from .core.policy_engine import is_affirmative
 from .core.orchestrator import Orchestrator
@@ -56,6 +59,10 @@ _cfg = VortexConfig.from_env()
 ROOT = _cfg.root
 VOICE = _cfg.voice
 USER_NAME = _cfg.user_name
+# Standby/Activation/Personality foundation (2026-08-20).
+ACTIVATION_RESPONSE = _cfg.activation_response
+BARGE_IN_RESPONSE = _cfg.barge_in_response
+PERSONALITY_MODE_DEFAULT = personality.PersonalityMode(_cfg.personality_mode)
 TTS_VOLUME = _cfg.tts_volume
 # Custom-trained model (tools/wakeword/build_hey_vortex.py) so the phrase matches the assistant's name.
 WAKE_WORD = _cfg.wake_word
@@ -131,6 +138,20 @@ class Vortex:
         self.recognizer = sr.Recognizer()
         self.current_pid = os.getpid()
         self.awaiting_confirmation = None
+        # Personality/Owner-Context foundation (2026-08-20): personality_mode
+        # is mutable runtime state (switched by the "switch to X mode" voice
+        # command, see core/capability_registry.py's _set_personality_mode) -
+        # config.py's personality_mode only supplies the starting value, the
+        # same relationship it has with e.g. awaiting_confirmation above.
+        self.personality_mode = PERSONALITY_MODE_DEFAULT
+        # Thin, single-owner identity - see core/owner_context.py's module
+        # docstring for why session_state/personality_mode are live
+        # properties here, not copied fields. owner_id is a fixed constant:
+        # no voice enrollment/speaker ID exists or is attempted.
+        self.owner = OwnerContext(
+            owner_id='primary_owner', display_name=USER_NAME, preferred_address=USER_NAME,
+            get_session_state=lambda: self.state, get_personality_mode=lambda: self.personality_mode)
+        self._executing = threading.Event()
         self.audit = AuditLog(AUDIT_LOG_PATH)
         self.memory = MemoryStore(MEMORY_DB_PATH)
         self.browser = BrowserAgent()
@@ -195,7 +216,8 @@ class Vortex:
             recover_wake_stream=self.wake.recover_stream,
             is_capturing=self.capturing.is_set,
             clear_awaiting_confirmation=self._clear_awaiting_confirmation,
-            log=self.log, is_running=lambda: self.running)
+            log=self.log, is_running=lambda: self.running,
+            activation_response=ACTIVATION_RESPONSE, barge_in_response=BARGE_IN_RESPONSE)
 
         # docs/REFACTOR_PLAN.md Step 5: the *what* (open/close/shutdown) lives
         # in tools/system/* and this class; the *how* (Windows exe/URL tables,
@@ -244,12 +266,27 @@ class Vortex:
     @property
     def state(self):
         """docs/REFACTOR_PLAN.md Step 7: explicit VortexState (STANDBY/
-        ACTIVE_SESSION/SPEAKING), computed fresh on every read from the same
-        Events that already drive actual behavior - see
-        core/state_manager.py for why this is a read-only view, not a new
-        source of truth."""
+        ACTIVE_SESSION/SPEAKING, plus EXECUTING added 2026-08-20), computed
+        fresh on every read from the same Events that already drive actual
+        behavior - see core/state_manager.py for why this is a read-only
+        view, not a new source of truth."""
         return current_state(is_speaking=self.barge_in.speaking.is_set,
-                              is_in_active_session=self.session.in_active_session.is_set)
+                              is_in_active_session=self.session.in_active_session.is_set,
+                              is_executing=self._executing.is_set)
+
+    @property
+    def presentation_mode(self):
+        """Presentation/Demo Mode foundation (2026-08-20) - derived, not an
+        independently-settable second flag: presentation mode IS demo
+        personality mode, switched the same way ("switch to demo mode"), so
+        there's no second toggle that can drift out of sync with it for no
+        real benefit. Extension point only for now - no current code path
+        conditionally exposes internal diagnostics based on this (logs only
+        ever go to vortex.log, never spoken), so this is honestly a real,
+        queryable flag with exactly one live effect today (personality.py's
+        DEMO directive) plus a documented seam for future diagnostics-
+        surfacing code to check before speaking/showing anything internal."""
+        return self.personality_mode == personality.PersonalityMode.DEMO
 
     # ---------- speech output (voice/tts.py owns the actual logic) ----------
 
@@ -277,7 +314,16 @@ class Vortex:
         generation stops the moment we are interrupted."""
         user_turn_id = self.memory.add_turn('user', query)
         self._index_turn_async(user_turn_id, 'user', query)
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.memory.recent(HISTORY_TURNS)
+        # Personality/Social-context foundation (2026-08-20): the one real
+        # integration point for both - see core/personality.py's module
+        # docstring for the full pipeline this implements (Conversation
+        # Context -> Intent -> Personality Policy -> Response Generation).
+        # social_context.classify() is intentionally simple/rule-based (see
+        # its own docstring) - a future, genuinely intelligent classifier
+        # can replace it without this call site changing.
+        social_label = social_context.classify(query)
+        system_prompt = personality.build_system_prompt(SYSTEM_PROMPT, self.personality_mode, social_label)
+        messages = [{'role': 'system', 'content': system_prompt}] + self.memory.recent(HISTORY_TURNS)
         reply = ''
         try:
             stream = self.llm.chat_stream(messages)
@@ -546,22 +592,32 @@ class Vortex:
         if not cmd:
             self.speak('I did not catch that Boss.')
             return
-        if self.handle_confirmation(cmd):
-            return
-        intent = intent_router.route(cmd)
-        if isinstance(intent, intent_router.Unhandled):
-            if LLM_TOOL_CALLING_ENABLED:
-                tool_intent = self._try_tool_call(cmd)
-                if tool_intent is not None:
-                    self._registry.dispatch(tool_intent)
-                    return
-            # No capability matched (regex or tool-call) - fall through to
-            # the LLM. Not a registered capability itself: this is the
-            # default reasoning path, not a capability with its own trigger
-            # phrase.
-            self.speak_stream(self.ask_llm_stream(cmd))
-            return
-        self._registry.dispatch(intent)
+        # Standby/Activation/Personality foundation (2026-08-20): EXECUTING
+        # covers routing + dispatch as one atomic busy period - see
+        # core/state_manager.py's EXECUTING docstring for why this isn't
+        # split into a separate PROCESSING phase. try/finally so a raised
+        # exception from any handler still clears this rather than leaving
+        # state permanently stuck reporting EXECUTING.
+        self._executing.set()
+        try:
+            if self.handle_confirmation(cmd):
+                return
+            intent = intent_router.route(cmd)
+            if isinstance(intent, intent_router.Unhandled):
+                if LLM_TOOL_CALLING_ENABLED:
+                    tool_intent = self._try_tool_call(cmd)
+                    if tool_intent is not None:
+                        self._registry.dispatch(tool_intent)
+                        return
+                # No capability matched (regex or tool-call) - fall through to
+                # the LLM. Not a registered capability itself: this is the
+                # default reasoning path, not a capability with its own trigger
+                # phrase.
+                self.speak_stream(self.ask_llm_stream(cmd))
+                return
+            self._registry.dispatch(intent)
+        finally:
+            self._executing.clear()
 
     def _try_tool_call(self, cmd):
         """Only reached when config.py's llm_tool_calling_enabled is

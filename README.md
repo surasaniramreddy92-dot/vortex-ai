@@ -42,6 +42,7 @@ everything else.
 | 7 | Document Intelligence | **Implemented (v1)** |
 | 8 | Vision | Started |
 | N/A | Communication (Email) — not one of the original 17 phases, see [IMPLEMENTED.md](IMPLEMENTED.md) | Started |
+| N/A | Standby/Activation/Personality/Owner-Context Foundation — not one of the original 17 phases, see [IMPLEMENTED.md](IMPLEMENTED.md) | Started |
 | 15 | Security, Identity & Policy Enforcement | Partial |
 
 Everything else in the master roadmap (vision, service layer, durable
@@ -70,6 +71,8 @@ phase by phase, in its own commit batch.
   "reply to john and say I'll be there at 5" - LLM drafts a reply, asks before sending
   "do you remember my favorite language"   - retrieval over past conversation turns
   "explain how Java works"                 - falls back to the local LLM
+  "stand down"                             - silently ends the session, back to standby (wake word still works after)
+  "switch to witty mode"                   - changes personality mode (professional/friendly/witty/protective/demo)
 ```
 
 ## Quickstart
@@ -189,6 +192,9 @@ While VORTEX is talking, saying "Hey Vortex" again cuts it off mid-sentence
 | `VORTEX_GMAIL_TOKEN` | `<VORTEX_HOME>/data/gmail_token.json` | cached OAuth token after the one-time browser consent, auto-refreshed after that |
 | `VORTEX_MAIL_MAX_RESULTS` | `5` | how many unread emails "check my email" summarizes at once |
 | `VORTEX_LLM_TOOL_CALLING_ENABLED` | `false` | structured tool-calling for unmatched commands (see `IMPLEMENTED.md`'s Phase 4 row) — off by default: live-tested to be unreliable on every model currently on this machine (hallucinated/malformed calls), real infrastructure but not yet safe to enable |
+| `VORTEX_ACTIVATION_RESPONSE` | `Yes Boss?` | what VORTEX says on a fresh wake |
+| `VORTEX_BARGE_IN_RESPONSE` | `Yes Boss, I'm listening.` | what VORTEX says when you interrupt it mid-response — deliberately distinct text from activation above |
+| `VORTEX_PERSONALITY_MODE` | `professional` | starting personality mode (`professional`/`friendly`/`witty`/`protective`/`demo`) — runtime-switchable afterward via "switch to X mode" |
 
 ## Architecture today
 

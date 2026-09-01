@@ -33,7 +33,8 @@ class Session:
     def __init__(self, *, events, barge_in, session_timeout, wake_watchdog_timeout,
                  capture_command, execute, speak, greet, warm_up, get_last_audio_at,
                  recover_wake_stream, is_capturing, clear_awaiting_confirmation,
-                 log, is_running):
+                 log, is_running, activation_response='Yes Boss?',
+                 barge_in_response="Yes Boss, I'm listening."):
         self.events = events
         self.barge_in = barge_in
         self.session_timeout = session_timeout
@@ -49,12 +50,27 @@ class Session:
         self.clear_awaiting_confirmation = clear_awaiting_confirmation
         self.log = log
         self.is_running = is_running
+        # Standby/Activation foundation (2026-08-20): previously the literal
+        # strings 'Yes Boss?'/"Yes Boss, I'm listening." inline below -
+        # config.py's activation_response/barge_in_response now supply them,
+        # defaults unchanged so behavior is identical for anyone who hasn't
+        # set the new env vars.
+        self.activation_response = activation_response
+        self.barge_in_response = barge_in_response
         # docs/REFACTOR_PLAN.md Step 7: the only piece of state genuinely
         # missing before core/state_manager.py could answer "is VORTEX
         # inside an active-session follow-up window" - purely additive,
         # set/cleared around the *outside* of the loop below, touching none
         # of the barge-in-critical timing logic inside it.
         self.in_active_session = threading.Event()
+        # Standby/Activation foundation (2026-08-20): set by
+        # core/capability_registry.py's _stand_down handler (the "stand
+        # down" voice command) to end the current active session
+        # immediately and silently. Checked only at the top of
+        # active_session()'s loop, same as in_active_session above - purely
+        # additive, does not touch barge_in's speaking/stop_speaking Events
+        # or any of the timing-critical logic those drive.
+        self.end_session_now = threading.Event()
 
     def active_session(self):
         """Keep listening for follow-ups (confirmations, next command) without
@@ -76,6 +92,10 @@ class Session:
             first = True
             while self.is_running():
                 if self.barge_in.stop_speaking.is_set():
+                    return
+                if self.end_session_now.is_set():
+                    self.end_session_now.clear()
+                    self.log('Stand down: ending session, no response')
                     return
                 cmd = self.capture_command(timeout=self.session_timeout,
                                             allow_offline_on_unclear=first)
@@ -118,9 +138,9 @@ class Session:
                 # mid-word, reads ambiguously (did it hear the interruption, or
                 # is this a coincidence?). "Yes Boss, I'm listening" is
                 # unambiguous: it specifically confirms the cutoff registered.
-                self.speak("Yes Boss, I'm listening.")
+                self.speak(self.barge_in_response)
             else:
                 # Always spoken on a fresh wake too: silence alone gave no
                 # audible confirmation VORTEX was actually listening.
-                self.speak('Yes Boss?')
+                self.speak(self.activation_response)
             self.active_session()

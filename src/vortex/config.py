@@ -82,6 +82,27 @@ class VortexConfig:
     root: str = field(default_factory=_default_root)
     voice: str = field(default_factory=lambda: os.getenv('VORTEX_VOICE', 'en-US-AvaMultilingualNeural'))
     user_name: str = field(default_factory=lambda: os.getenv('USER_NAME', 'Boss'))
+    # Standby/Activation foundation (2026-08-20): the spoken acknowledgment on
+    # a fresh wake vs. a barge-in interruption were hardcoded literals in
+    # voice/session.py - split into config so they're the one thing about
+    # activation that's genuinely practical to make configurable (the wake
+    # *phrase* itself is an acoustic ONNX model, not a string - see
+    # voice/wake.py - so it can't follow the same pattern). Distinct text on
+    # purpose, not just "make one configurable" - see session.py's own
+    # docstring for why the barge-in case needs an unambiguous, different
+    # acknowledgment.
+    activation_response: str = field(
+        default_factory=lambda: os.getenv('VORTEX_ACTIVATION_RESPONSE', 'Yes Boss?'))
+    barge_in_response: str = field(
+        default_factory=lambda: os.getenv('VORTEX_BARGE_IN_RESPONSE', "Yes Boss, I'm listening."))
+    # Personality foundation (2026-08-20, core/personality.py) - initial mode
+    # on process start. Runtime-mutable after that (self.personality_mode on
+    # the Vortex instance, switched via the "switch to X mode" voice
+    # command) - config only supplies the starting value, the same relationship
+    # config.py already has with e.g. awaiting_confirmation (mutable instance
+    # state that starts from a fixed default, not itself a config field).
+    personality_mode: str = field(
+        default_factory=lambda: os.getenv('VORTEX_PERSONALITY_MODE', 'professional'))
     # On laptops the mic and speakers sit close together, so VORTEX's own voice
     # dominates whatever the mic hears while it's talking - a real barge-in
     # failure traced to this: real diagnostic logs showed zero wake-model score

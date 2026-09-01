@@ -11,6 +11,7 @@ classification from (see intent_router.py's module docstring)."""
 import datetime
 
 from . import intent_router as intents
+from . import personality
 from .. import files as fileops
 from .. import popup
 from .. import screen as screen_reader
@@ -27,6 +28,8 @@ class CapabilityRegistry:
         self.host = host
         self._handlers = {
             intents.ShutdownVortex: self._shutdown_vortex,
+            intents.StandDown: self._stand_down,
+            intents.SetPersonalityMode: self._set_personality_mode,
             intents.SpeakTime: self._speak_time,
             intents.SpeakDate: self._speak_date,
             intents.CloseAllPrompt: self._close_all_prompt,
@@ -69,6 +72,21 @@ class CapabilityRegistry:
     def _shutdown_vortex(self, intent):
         self.host.speak('Shutting down. See you soon Boss.')
         self.host.stop()
+
+    def _stand_down(self, intent):
+        """No self.host.speak() call anywhere in this method, on purpose -
+        the feature spec is explicit that this transition must be silent.
+        Ending the process's own active_session() loop happens via a
+        dedicated Event (voice/session.py's Session.end_session_now), not by
+        touching barge_in's speaking/stop_speaking - see that Event's own
+        docstring for why reusing barge-in's Events here would risk the kind
+        of latency regression Step 3 already fixed once."""
+        self.host.session.end_session_now.set()
+
+    def _set_personality_mode(self, intent):
+        mode = personality.PersonalityMode(intent.mode)
+        self.host.personality_mode = mode
+        self.host.speak(f'Switched to {mode.value.capitalize()} mode.')
 
     def _speak_time(self, intent):
         self.host.speak(f"The current time is {datetime.datetime.now().strftime('%I:%M %p')}")

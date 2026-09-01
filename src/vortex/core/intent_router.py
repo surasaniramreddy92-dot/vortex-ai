@@ -25,6 +25,28 @@ class ShutdownVortex:
 
 
 @dataclass(frozen=True)
+class StandDown:
+    """Standby/Activation foundation (2026-08-20) - distinct from
+    ShutdownVortex above on purpose: this ends the current active session
+    immediately and silently, returning to standby, WITHOUT terminating the
+    process (see voice/session.py's Session.end_session_now). Deliberately a
+    different trigger phrase, not a repurposing of "shutdown vortex" - that
+    phrase already has a real, tested, documented meaning (full process
+    exit, identical to the tray's Exit item) that this must not change."""
+    name: ClassVar[str] = 'stand_down'
+    destructive: ClassVar[bool] = False
+    description: ClassVar[str] = 'End the active session immediately and silently, back to standby.'
+
+
+@dataclass(frozen=True)
+class SetPersonalityMode:
+    mode: str
+    name: ClassVar[str] = 'set_personality_mode'
+    destructive: ClassVar[bool] = False
+    description: ClassVar[str] = "Switch VORTEX's personality mode."
+
+
+@dataclass(frozen=True)
 class SpeakTime:
     name: ClassVar[str] = 'time'
     destructive: ClassVar[bool] = False
@@ -248,11 +270,11 @@ class Unhandled:
 # (every type reachable, every name unique) without hand-maintaining a
 # second, separate list that could drift from the real routing order.
 ALL_INTENT_TYPES = (
-    ShutdownVortex, SpeakTime, SpeakDate, CloseAllPrompt, RestartPrompt, ShutdownPrompt,
-    Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail, ReplyToEmailPrompt, RecallMemory,
-    PlayYoutube, SearchFiles, WebSearch, Browse, Click, ListFiles, DeleteFilePrompt,
-    MoveFilePrompt, CopyFile, RenameFilePrompt, CloseApp, OpenTarget, DocumentQuestion,
-    SummarizeDocument, ReadDocument, Unhandled,
+    ShutdownVortex, StandDown, SetPersonalityMode, SpeakTime, SpeakDate, CloseAllPrompt,
+    RestartPrompt, ShutdownPrompt, Lock, CloseBrowser, ReadPage, ReadScreen, CheckEmail,
+    ReplyToEmailPrompt, RecallMemory, PlayYoutube, SearchFiles, WebSearch, Browse, Click,
+    ListFiles, DeleteFilePrompt, MoveFilePrompt, CopyFile, RenameFilePrompt, CloseApp,
+    OpenTarget, DocumentQuestion, SummarizeDocument, ReadDocument, Unhandled,
 )
 
 _YOUTUBE_PATTERNS = [
@@ -261,6 +283,8 @@ _YOUTUBE_PATTERNS = [
     re.compile(r'search youtube for (.+)'),
 ]
 
+_SET_PERSONALITY_MODE = re.compile(
+    r'(?:switch to|use|enable|go into) (professional|friendly|witty|protective|demo)(?: mode| personality)?\b')
 _TIME = re.compile(r'\btime\b')
 _DATE = re.compile(r'\bdate\b')
 _LOCK = re.compile(r'\block\b.*\b(?:system|computer|screen|pc)\b')
@@ -294,6 +318,14 @@ def route(cmd):
     before anything reaches here, same as before this extraction)."""
     if 'shutdown vortex' in cmd:
         return ShutdownVortex()
+    # Checked immediately after ShutdownVortex, before every other pattern -
+    # a distinct, deliberate phrase (see StandDown's docstring for why this
+    # is NOT "shutdown vortex" repurposed).
+    if 'stand down' in cmd:
+        return StandDown()
+    m = _SET_PERSONALITY_MODE.match(cmd)
+    if m:
+        return SetPersonalityMode(mode=m.group(1))
     if _TIME.search(cmd):
         return SpeakTime()
     if _DATE.search(cmd):

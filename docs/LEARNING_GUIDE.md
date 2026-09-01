@@ -543,6 +543,61 @@ quietly if nobody's watching for it. Not set up yet in this repo.
 
 ---
 
+## Standby/Activation/Personality/Owner-Context Foundation (2026-08-20)
+
+**The core idea:** a "personality" for an assistant is dangerous to build
+directly into the reasoning path — hardcode enough canned jokes or
+protective reflexes into the main prompt/logic, and it becomes impossible to
+later swap in a smarter model or a real classifier without rewriting
+everything downstream of it. The fix is the same one this codebase already
+uses everywhere else: keep the *policy* (what tone to take, how to react to
+a given social situation) in its own thin, pure layer, separate from the
+*mechanism* (the LLM call, the intent dispatch) it steers. `core/
+personality.py`'s `build_system_prompt()` is exactly this — a pure function
+that takes a mode and a social label and returns a modified prompt string,
+with zero awareness of Ollama, intent routing, or anything else. Swapping in
+a smarter model, a second model for tone-only decisions, or a real trained
+social classifier later means replacing what feeds this function, not
+changing how it's called.
+
+**Read-only state, not a second source of truth:** this repo already had one
+lesson learned the hard way about state machines — `core/state_manager.py`'s
+`VortexState` enum is computed fresh from real Events every time it's read,
+never cached, because an earlier attempt to make barge-in's timing-critical
+Events report through a single enum risked reintroducing a latency bug that
+took multiple live-debugged sessions to fix the first time. This feature's
+`EXECUTING` state and `OwnerContext`'s `session_state`/`personality_mode`
+properties both follow the same rule: they delegate live to whatever already
+holds the real answer, rather than copying it into a field that could go
+stale the moment the real thing changes.
+
+**Honest scope vs. the spec's literal ask:** the feature spec that drove this
+work listed `PROCESSING` and `EXECUTING` as two separate states. This
+codebase's `execute()` runs synchronously on one thread — classifying a
+command (a regex match) and actually dispatching it happen back-to-back with
+no real, observable gap between them today. Building two states here would
+have meant inventing a distinction with no underlying signal, purely to
+match a name in a spec — a small example of a bigger, general principle:
+specs describe an eventual shape, but a good implementation only builds the
+parts that have a real thing behind them yet, and says so plainly about the
+rest, rather than faking the difference.
+
+**Why the "social classifier" is honestly not real intelligence:**
+`core/social_context.py`'s `classify()` is keyword and phrase-shape
+matching — the kind of code you could read top to bottom and predict exactly
+what it will do on any input. That's a feature, not a limitation to hide:
+a foundation layer's job is to prove the pipeline (text → label → policy →
+prompt change) actually works end to end, with a component simple enough to
+fully verify, before investing in something harder to inspect (an LLM-based
+judge, a trained classifier) sitting behind the exact same interface. The
+one thing that *is* held to a hard, testable standard regardless of how
+smart the classifier ever gets: no output of this pipeline may ever
+instruct VORTEX to insult, threaten, or attack anyone — that's checked
+structurally (every mode × every label combination), not left as a hope
+about how a future model might behave.
+
+---
+
 ## A closing note on the vision (train new models, "everything possible")
 
 It's worth being precise about what's realistic here. VORTEX already has one

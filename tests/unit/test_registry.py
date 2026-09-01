@@ -111,6 +111,22 @@ def test_shutdown_vortex(v):
     last_call(v, 'stop')
 
 
+def test_stand_down_ends_session_silently_and_does_not_stop_the_process(v):
+    """Standby/Activation foundation (2026-08-20) - distinct from
+    shutdown_vortex above: no self.host.stop() call, no speech."""
+    v.execute('stand down')
+    assert v.session.end_session_now.is_set()
+    assert v.spoken == []
+    assert not any(c[0] == 'stop' for c in v.calls)
+
+
+def test_set_personality_mode_dispatches_and_confirms(v):
+    from vortex.core.personality import PersonalityMode
+    v.execute('switch to friendly mode')
+    assert v.personality_mode == PersonalityMode.FRIENDLY
+    assert v.spoken == ['Switched to Friendly mode.']
+
+
 def test_time(v):
     v.execute('what is the time')
     assert any('current time' in s for s in v.spoken)

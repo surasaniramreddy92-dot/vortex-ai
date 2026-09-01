@@ -58,11 +58,19 @@ src/vortex/
 │   ├── intent_router.py    #   BUILT - text -> Intent (pure, no side effects), 26 Intent types
 │   ├── capability_registry.py  # BUILT - Intent -> capability dispatch
 │   ├── state_manager.py    #   BUILT - explicit VortexState enum (STANDBY/ACTIVE_SESSION/
-│   │                       #   SPEAKING), a read-only view over voice/'s existing Events,
-│   │                       #   not a new source of truth (see Step 7's done-note for why)
+│   │                       #   SPEAKING/EXECUTING), a read-only view over voice/'s existing
+│   │                       #   Events, not a new source of truth (see Step 7's done-note for why)
 │   ├── policy_engine.py    #   BUILT - is_affirmative() yes/no classification. A fully
 │   │                       #   general confirmation-policy engine was NOT built - deliberately
 │   │                       #   out of scope, see §3 below
+│   ├── personality.py      #   BUILT (Standby/Activation/Personality foundation, 2026-08-20) -
+│   │                       #   PersonalityMode enum + build_system_prompt(), the one live
+│   │                       #   integration point into app.py's ask_llm_stream
+│   ├── owner_context.py    #   BUILT (2026-08-20) - thin single-owner identity object;
+│   │                       #   session_state/personality_mode delegate live to Vortex, not copied
+│   ├── social_context.py   #   BUILT (2026-08-20) - SocialLabel enum + a deliberately simple,
+│   │                       #   rule-based classify() - see its module docstring for why this is
+│   │                       #   honestly scoped as a foundation, not real social understanding
 │   └── events.py           #   NOT BUILT - events between pieces are plain strings/queue
 │                            #   items; a formal Event-type module was never needed in practice
 │
@@ -76,11 +84,14 @@ src/vortex/
 │   └── vad.py              # DEFERRED - no VAD model in use yet; wake score is the de facto gate today
 │
 ├── llm/                    # BUILT (Step 4)
-│   ├── provider.py         #   abstract LLMProvider.chat_stream(...)
+│   ├── provider.py         #   abstract LLMProvider.chat_stream(...) + chat_with_tools(...)
 │   ├── ollama_provider.py  #   concrete Ollama implementation
+│   ├── tools.py            #   BUILT (2026-08-19/20) - tool schemas + tool_call_to_intent(),
+│   │                       #   real infrastructure shipped OFF by default (see IMPLEMENTED.md
+│   │                       #   Phase 4 for the live-tested reason: unreliable on every model
+│   │                       #   available locally)
 │   └── prompts.py          #   NOT BUILT - SYSTEM_PROMPT already lived in config.py since Step
 │                            #   2, so a second home for the same string was skipped as redundant
-│   └── models.py           # DEFERRED - no structured tool-call schemas yet (Phase 4 full scope)
 │
 ├── tools/                  # BUILT (Step 5), capability logic only
 │   └── system/

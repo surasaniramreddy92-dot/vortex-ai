@@ -6,6 +6,62 @@ this file is the fast way to see what changed and when without reading full
 commit diffs. Phase-by-phase status (not date-based) lives in
 `IMPLEMENTED.md`; this file is chronological.
 
+## 2026-08-20 (continued)
+
+### Added — Standby/Activation/Personality/Owner-Context foundation
+
+Direct user request for the foundation of a future Jarvis/Friday-level
+personality layer, explicitly scoped as *foundation only* - not the full
+multi-model/multi-agent system. Full architectural analysis, two real
+conflicts surfaced and resolved with the user before any code was written
+(see `IMPLEMENTED.md`'s new N/A row for the complete reasoning):
+
+- **"Stand down"** (`core/intent_router.py`'s new `StandDown` intent): ends
+  the active session immediately and silently, back to standby, WITHOUT
+  killing the process - kept deliberately separate from the existing
+  `"shutdown vortex"` (full process exit, unchanged, still tested and
+  working exactly as before). New `Session.end_session_now` Event
+  (`voice/session.py`), additive in exactly the same way `in_active_session`
+  was added in the Step 7 refactor - doesn't touch barge-in's
+  speaking/stop_speaking timing at all.
+- **Configurable activation text**: `'Yes Boss?'`/`"Yes Boss, I'm
+  listening."` were hardcoded literals in `voice/session.py` - now
+  `VortexConfig.activation_response`/`barge_in_response`
+  (`VORTEX_ACTIVATION_RESPONSE`/`VORTEX_BARGE_IN_RESPONSE`), defaults
+  unchanged.
+- **`core/personality.py`**: `PersonalityMode` enum (professional/friendly/
+  witty/protective/demo), switchable via "switch to X mode". One real
+  integration point - `ask_llm_stream()`'s system prompt now runs through
+  `build_system_prompt()` instead of a flat constant. **Live-verified**
+  against real Ollama: the same question in PROFESSIONAL vs. WITTY mode
+  produced two different real answers - the wiring genuinely reaches the
+  model (the tonal difference itself was real but subtle with
+  `llama3.2:1b`, honestly noted rather than oversold).
+- **`core/owner_context.py`**: thin single-owner identity object -
+  `session_state`/`personality_mode` are live-delegating properties, not
+  copied fields (avoids the exact stale-snapshot problem
+  `core/state_manager.py` already documents for `VortexState`).
+- **`core/social_context.py`**: a deliberately simple, rule-based
+  `classify()` (technical criticism / friendly teasing / owner-directed
+  disrespect / genuine abuse / ambiguous / normal) feeding an additional
+  directive into `build_system_prompt()`. Explicitly NOT sentiment analysis
+  or a trained model - fails closed to AMBIGUOUS/NORMAL whenever unsure.
+  Structural guarantee tested across all 30 mode×label combinations: no
+  combination this code can produce ever yields an aggressive, insulting,
+  or threatening directive.
+- **`core/state_manager.py`**: added one new `EXECUTING` state - not the
+  spec's literal `PROCESSING`+`EXECUTING` pair, since intent classification
+  is a sub-millisecond regex match in this codebase, not an observably
+  separate phase from dispatch. Documented as a deliberate scope
+  adjustment, not an oversight.
+- **`presentation_mode`**: derived read-only property
+  (`personality_mode == DEMO`), not a second independently-settable flag.
+- 42 new unit tests (`test_personality.py`, `test_owner_context.py`,
+  `test_social_context.py`, `test_lifecycle.py`, plus extensions to
+  `test_state_manager.py`/`test_intent_routing.py`/`test_registry.py`/
+  `test_config.py`). Full regression suite (280 pre-existing + new) stayed
+  green throughout.
+
 ## 2026-08-19 (continued into 2026-08-20)
 
 ### Added — security, memory retrieval, tool-calling (in that priority order, per direct user request to finish all three as fast as honestly possible)

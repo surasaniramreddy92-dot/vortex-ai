@@ -26,6 +26,20 @@ def test_shutdown_vortex():
     assert ir.route('shutdown vortex') == ir.ShutdownVortex()
 
 
+def test_stand_down_is_distinct_from_shutdown_vortex():
+    """Standby/Activation foundation (2026-08-20) - "stand down" must never
+    be confused with "shutdown vortex" (full process exit, unchanged)."""
+    assert ir.route('stand down') == ir.StandDown()
+    assert ir.route('shutdown vortex') != ir.route('stand down')
+
+
+def test_set_personality_mode_all_five_modes():
+    for mode in ('professional', 'friendly', 'witty', 'protective', 'demo'):
+        assert ir.route(f'switch to {mode} mode') == ir.SetPersonalityMode(mode=mode)
+    assert ir.route('use witty personality') == ir.SetPersonalityMode(mode='witty')
+    assert ir.route('enable demo mode') == ir.SetPersonalityMode(mode='demo')
+
+
 def test_time():
     assert ir.route('what is the time') == ir.SpeakTime()
 
@@ -200,7 +214,7 @@ def test_open_chrome_does_not_become_a_document_read():
 def test_route_never_touches_subprocess():
     with patch('subprocess.Popen') as mock_popen:
         for cmd in ('open chrome', 'close all', 'shutdown vortex', 'shutdown system',
-                    'delete file a.txt', 'lock the computer'):
+                    'delete file a.txt', 'lock the computer', 'stand down', 'switch to witty mode'):
             ir.route(cmd)
         mock_popen.assert_not_called()
 
