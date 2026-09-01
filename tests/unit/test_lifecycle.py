@@ -133,12 +133,26 @@ def test_personality_mode_can_be_changed_via_voice_command(v):
 def test_demonstrate_yourself_enters_presentation_mode(v):
     """The literal phrase from the feature spec ("VORTEX to demonstrate
     yourself") must actually work end to end through execute(), not just
-    the more mechanical "switch to demo mode" wording."""
+    the more mechanical "switch to demo mode" wording. demonstrate_self()
+    itself is mocked here (its real content is covered by
+    test_self_knowledge.py and a live Ollama verification, not by hitting
+    the network in a fast unit test) - this test isolates "does entering
+    demo mode trigger the actual demonstration, not just a mode switch."""
+    calls = []
+    v.demonstrate_self = lambda: calls.append('demonstrated')
     assert v.presentation_mode is False
     v.execute('demonstrate yourself')
     assert v.personality_mode == PersonalityMode.DEMO
     assert v.presentation_mode is True
     assert v.spoken == ['Switched to Demo mode.']
+    assert calls == ['demonstrated']
+
+
+def test_switching_to_a_non_demo_mode_does_not_demonstrate(v):
+    calls = []
+    v.demonstrate_self = lambda: calls.append('demonstrated')
+    v.execute('switch to witty mode')
+    assert calls == []
 
 
 def test_stand_down_dispatches_through_execute_with_no_response(v):

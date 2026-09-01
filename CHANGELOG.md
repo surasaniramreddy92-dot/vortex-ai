@@ -77,6 +77,36 @@ conflicts surfaced and resolved with the user before any code was written
   the prompt on paper. New tests in `test_intent_routing.py`/
   `test_lifecycle.py`.
 
+### Added — real self-demonstration content (same day, direct user request)
+
+Routing to Demo mode only changed the *tone* of future answers - it never
+actually said what VORTEX can do, how it was built, the conversation
+history with the user, future plans, or current drawbacks, despite the
+user explicitly asking for all of that when demonstrating itself.
+
+- **First attempt (rejected on live evidence):** a grounding prompt with
+  all the real facts, asking the LLM to narrate them conversationally.
+  Live-tested against `llama3.2:1b`: it recited a few of ~29 raw capability
+  strings near the start of the prompt, silently dropped the build-history/
+  relationship/plans/drawbacks sections entirely, and closed with "Would
+  you like to proceed with any of these actions?" - misreading a self-
+  introduction as an action menu. A raised token budget alone didn't fix
+  the earlier truncation either (`"...and I can tell"` cut off mid-
+  sentence) - same class of unreliability already documented for this
+  model elsewhere (tool-calling hallucinations).
+- **Redesigned as fully deterministic** (`core/self_knowledge.py`, no LLM
+  call): a curated, hand-written capabilities overview (cross-checked
+  against `intent_router.ALL_INTENT_TYPES` via a test so it can't silently
+  drift), a short build-history paragraph, real conversation-history stats
+  from a new `MemoryStore.stats()` (`turn_count`/`first_turn_at` - real
+  SQL, not invented numbers), the same honest future-plans/drawbacks
+  content - spoken as one complete paragraph via `Vortex.demonstrate_self()`.
+- **Live-verified, real output**: *"...We've exchanged 490 messages
+  together since 2026-08-02 11:36:25..."* followed by real future plans and
+  drawbacks, complete and never truncated.
+- 12 new unit tests (`test_self_knowledge.py`, `test_memory.py`), full
+  regression suite stayed green throughout.
+
 ## 2026-08-19 (continued into 2026-08-20)
 
 ### Added — security, memory retrieval, tool-calling (in that priority order, per direct user request to finish all three as fast as honestly possible)

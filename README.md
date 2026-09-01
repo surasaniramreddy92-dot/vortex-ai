@@ -73,6 +73,7 @@ phase by phase, in its own commit batch.
   "explain how Java works"                 - falls back to the local LLM
   "stand down"                             - silently ends the session, back to standby (wake word still works after)
   "switch to witty mode"                   - changes personality mode (professional/friendly/witty/protective/demo)
+  "demonstrate yourself"                   - enters Demo mode and speaks a real, complete self-introduction
 ```
 
 ## Quickstart

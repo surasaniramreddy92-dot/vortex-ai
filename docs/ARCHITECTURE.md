@@ -71,6 +71,10 @@ src/vortex/
 │   ├── social_context.py   #   BUILT (2026-09-01) - SocialLabel enum + a deliberately simple,
 │   │                       #   rule-based classify() - see its module docstring for why this is
 │   │                       #   honestly scoped as a foundation, not real social understanding
+│   ├── self_knowledge.py   #   BUILT (2026-09-01) - "VORTEX, demonstrate yourself" content.
+│   │                       #   Deliberately NOT LLM-generated - see its module docstring for the
+│   │                       #   live-tested reason (llama3.2:1b couldn't reliably synthesize
+│   │                       #   several real facts into one coherent answer)
 │   └── events.py           #   NOT BUILT - events between pieces are plain strings/queue
 │                            #   items; a formal Event-type module was never needed in practice
 │

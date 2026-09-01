@@ -127,6 +127,21 @@ def test_set_personality_mode_dispatches_and_confirms(v):
     assert v.spoken == ['Switched to Friendly mode.']
 
 
+def test_demonstrate_yourself_confirms_and_demonstrates(v):
+    """Entering DEMO mode specifically also gives the real self-
+    demonstration content (Vortex.demonstrate_self), not just the mode-
+    switch confirmation every other mode gets. demonstrate_self() speaks
+    directly (no LLM call - see core/self_knowledge.py's module docstring
+    for why), so this is a fast, network-free dispatch test as-is; the real
+    content itself is covered by test_self_knowledge.py."""
+    from vortex.core.personality import PersonalityMode
+    v.execute('demonstrate yourself')
+    assert v.personality_mode == PersonalityMode.DEMO
+    assert len(v.spoken) == 2
+    assert v.spoken[0] == 'Switched to Demo mode.'
+    assert 'I can control your desktop' in v.spoken[1]
+
+
 def test_time(v):
     v.execute('what is the time')
     assert any('current time' in s for s in v.spoken)

@@ -87,6 +87,14 @@ class CapabilityRegistry:
         mode = personality.PersonalityMode(intent.mode)
         self.host.personality_mode = mode
         self.host.speak(f'Switched to {mode.value.capitalize()} mode.')
+        # Entering DEMO specifically also gives the actual self-demonstration
+        # content (Vortex.demonstrate_self) - switching mode alone only
+        # changes the *tone* of future answers, but "demonstrate yourself" is
+        # a request for real content (capabilities/history/plans/drawbacks),
+        # not just an acknowledgment. Every other mode switch stays silent
+        # beyond the confirmation above - this is deliberately DEMO-only.
+        if mode is personality.PersonalityMode.DEMO:
+            self.host.demonstrate_self()
 
     def _speak_time(self, intent):
         self.host.speak(f"The current time is {datetime.datetime.now().strftime('%I:%M %p')}")

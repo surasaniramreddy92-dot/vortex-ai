@@ -38,6 +38,7 @@ from .tools.system import process as system_process
 from .core import intent_router
 from .core import personality
 from .core import social_context
+from .core import self_knowledge
 from .core.owner_context import OwnerContext
 from .core.capability_registry import CapabilityRegistry
 from .core.policy_engine import is_affirmative
@@ -387,6 +388,17 @@ class Vortex:
         self.speak_stream(self._stream_llm_answer(
             'Answer strictly using the provided conversation excerpts. If they do not contain '
             'the answer, say so plainly. Answer in short spoken sentences.', prompt))
+
+    def demonstrate_self(self):
+        """The actual content behind "VORTEX, demonstrate yourself" - not
+        just switching to Demo personality mode (that alone only changes the
+        *tone* of future answers). Spoken directly, not via the LLM - see
+        core/self_knowledge.py's module docstring for the live-tested reason
+        (llama3.2:1b could not reliably synthesize multiple real facts into
+        one coherent answer; a deterministic, complete, hand-composed
+        introduction beat an unreliable LLM-narrated one for a request that
+        explicitly needs to cover several topics)."""
+        self.speak(self_knowledge.build_demo_speech(self.memory.stats()))
 
     # ---------- documents ----------
 

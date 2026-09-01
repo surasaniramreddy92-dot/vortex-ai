@@ -41,6 +41,20 @@ class MemoryStore:
             ).fetchall()
         return [{'role': role, 'content': content} for role, content in reversed(rows)]
 
+    def stats(self):
+        """Real, queryable conversation-history facts - added for
+        core/self_knowledge.py's demonstration content (2026-09-01), so
+        "how long have we been talking" is a real number from this table,
+        not something the LLM is left to invent. Returns
+        {'turn_count': int, 'first_turn_at': str or None} - first_turn_at is
+        the raw CURRENT_TIMESTAMP string SQLite stored (UTC, 'YYYY-MM-DD
+        HH:MM:SS'), None if turns is empty."""
+        with self._lock:
+            count = self._conn.execute('SELECT COUNT(*) FROM turns').fetchone()[0]
+            first_row = self._conn.execute(
+                'SELECT created_at FROM turns ORDER BY id ASC LIMIT 1').fetchone()
+        return {'turn_count': count, 'first_turn_at': first_row[0] if first_row else None}
+
     def close(self):
         with self._lock:
             self._conn.close()
