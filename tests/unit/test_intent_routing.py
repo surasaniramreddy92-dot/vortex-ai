@@ -40,6 +40,18 @@ def test_set_personality_mode_all_five_modes():
     assert ir.route('enable demo mode') == ir.SetPersonalityMode(mode='demo')
 
 
+def test_demonstrate_yourself_triggers_demo_mode():
+    """"Demonstrate yourself" is the exact phrase the feature spec itself
+    uses for Presentation/Demo mode - must work without the more mechanical
+    "switch to demo mode" wording."""
+    assert ir.route('demonstrate yourself') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('can you demonstrate yourself') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('show me what you can do') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('show what you can do') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('give me a demo') == ir.SetPersonalityMode(mode='demo')
+    assert ir.route('give a demonstration') == ir.SetPersonalityMode(mode='demo')
+
+
 def test_time():
     assert ir.route('what is the time') == ir.SpeakTime()
 

@@ -285,6 +285,17 @@ _YOUTUBE_PATTERNS = [
 
 _SET_PERSONALITY_MODE = re.compile(
     r'(?:switch to|use|enable|go into) (professional|friendly|witty|protective|demo)(?: mode| personality)?\b')
+# Natural phrasing for entering Demo/Presentation mode specifically -
+# "demonstrate yourself" is the exact phrase the feature spec itself uses,
+# so it must work without requiring the more mechanical "switch to demo
+# mode" wording. Maps to the same SetPersonalityMode(mode='demo') intent,
+# not a separate capability - this activates the polished, no-internal-
+# details conversational mode (personality.py's DEMO directive), not a
+# scripted capabilities recital (deliberately out of scope, see
+# capability_registry.py's _set_personality_mode and personality.py's
+# module docstring for why).
+_DEMO_TRIGGER = re.compile(
+    r'\b(?:demonstrate yourself|show (?:me )?what you can do|give (?:me )?a demo(?:nstration)?)\b')
 _TIME = re.compile(r'\btime\b')
 _DATE = re.compile(r'\bdate\b')
 _LOCK = re.compile(r'\block\b.*\b(?:system|computer|screen|pc)\b')
@@ -326,6 +337,8 @@ def route(cmd):
     m = _SET_PERSONALITY_MODE.match(cmd)
     if m:
         return SetPersonalityMode(mode=m.group(1))
+    if _DEMO_TRIGGER.search(cmd):
+        return SetPersonalityMode(mode='demo')
     if _TIME.search(cmd):
         return SpeakTime()
     if _DATE.search(cmd):

@@ -1,5 +1,5 @@
 """Unit tests for core/personality.py - Standby/Activation/Personality
-foundation, added 2026-08-20. build_system_prompt() is a pure function
+foundation, added 2026-09-01. build_system_prompt() is a pure function
 (base prompt + mode string in, prompt string out) so these need no mocking,
 matching intent_router.py's own testing style.
 """

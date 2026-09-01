@@ -1,5 +1,5 @@
 """Unit tests for core/social_context.py - Standby/Activation/Social-Context
-foundation, added 2026-08-20. classify() is pure (text in, SocialLabel out),
+foundation, added 2026-09-01. classify() is pure (text in, SocialLabel out),
 tested the same way intent_router.route() is: plain strings in, no mocking.
 
 These are also the direct tests for feature-spec Phase 8 scenarios 11-13

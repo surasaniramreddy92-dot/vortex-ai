@@ -543,7 +543,7 @@ quietly if nobody's watching for it. Not set up yet in this repo.
 
 ---
 
-## Standby/Activation/Personality/Owner-Context Foundation (2026-08-20)
+## Standby/Activation/Personality/Owner-Context Foundation (2026-09-01)
 
 **The core idea:** a "personality" for an assistant is dangerous to build
 directly into the reasoning path — hardcode enough canned jokes or

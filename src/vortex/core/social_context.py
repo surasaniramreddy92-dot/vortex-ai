@@ -1,4 +1,4 @@
-"""Social-context foundation (2026-08-20) - Phase 5 of the Standby+
+"""Social-context foundation (2026-09-01) - Phase 5 of the Standby+
 Activation+Personality/Owner-Context feature.
 
 `classify()` is a deliberately simple, conservative, rule-based (keyword and

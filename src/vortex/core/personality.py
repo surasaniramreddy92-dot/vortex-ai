@@ -1,4 +1,4 @@
-"""Personality foundation (2026-08-20) - the lightweight abstraction the
+"""Personality foundation (2026-09-01) - the lightweight abstraction the
 Standby+Activation+Personality/Owner-Context feature's Phase 3 asks for.
 
 Deliberately NOT a multi-agent personality system: one enum plus one pure

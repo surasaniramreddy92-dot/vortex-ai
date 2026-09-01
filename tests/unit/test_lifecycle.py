@@ -1,5 +1,5 @@
 """Lifecycle tests for the Standby/Activation/Personality/Owner-Context
-foundation (2026-08-20) - directly exercises the feature spec's Phase 8
+foundation (2026-09-01) - directly exercises the feature spec's Phase 8
 scenario list (1-10, plus 15). Scenarios 11-14 (social-context/personality
 non-aggression behavior) are covered in test_social_context.py and
 test_personality.py, which test the same guarantees at the unit level
@@ -128,6 +128,17 @@ def test_personality_mode_can_be_changed_via_voice_command(v):
     v.execute('switch to witty mode')
     assert v.personality_mode == PersonalityMode.WITTY
     assert any('Witty' in s for s in v.spoken)
+
+
+def test_demonstrate_yourself_enters_presentation_mode(v):
+    """The literal phrase from the feature spec ("VORTEX to demonstrate
+    yourself") must actually work end to end through execute(), not just
+    the more mechanical "switch to demo mode" wording."""
+    assert v.presentation_mode is False
+    v.execute('demonstrate yourself')
+    assert v.personality_mode == PersonalityMode.DEMO
+    assert v.presentation_mode is True
+    assert v.spoken == ['Switched to Demo mode.']
 
 
 def test_stand_down_dispatches_through_execute_with_no_response(v):

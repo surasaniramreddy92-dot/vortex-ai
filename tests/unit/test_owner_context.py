@@ -1,5 +1,5 @@
 """Unit tests for core/owner_context.py - Standby/Activation/Owner-Context
-foundation, added 2026-08-20. session_state/personality_mode are live
+foundation, added 2026-09-01. session_state/personality_mode are live
 properties delegating to injected callables, not copied fields - the point
 of these tests is proving that delegation is real (a change on the "host"
 side is visible immediately, never a stale snapshot).

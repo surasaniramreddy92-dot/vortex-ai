@@ -6,7 +6,7 @@ this file is the fast way to see what changed and when without reading full
 commit diffs. Phase-by-phase status (not date-based) lives in
 `IMPLEMENTED.md`; this file is chronological.
 
-## 2026-08-20 (continued)
+## 2026-09-01
 
 ### Added — Standby/Activation/Personality/Owner-Context foundation
 
@@ -61,6 +61,21 @@ conflicts surfaced and resolved with the user before any code was written
   `test_state_manager.py`/`test_intent_routing.py`/`test_registry.py`/
   `test_config.py`). Full regression suite (280 pre-existing + new) stayed
   green throughout.
+
+### Fixed (found during direct user re-testing, same day)
+
+- **"VORTEX, demonstrate yourself" didn't do anything** - the literal
+  phrase the feature itself is named after fell straight through to the
+  plain LLM fallback, since only the more mechanical "switch to demo mode"
+  wording was actually routed. Added a dedicated `_DEMO_TRIGGER` pattern
+  (`intent_router.py`) for `"demonstrate yourself"` / `"show me what you
+  can do"` / `"give me a demo(nstration)"`, mapped to the same
+  `SetPersonalityMode(mode='demo')` intent. **Live-verified end to end**:
+  after saying it, a real question about internal tools/architecture got
+  back a real Ollama answer that declined to discuss internals, unprompted
+  - the DEMO directive actually shaping real output, not just present in
+  the prompt on paper. New tests in `test_intent_routing.py`/
+  `test_lifecycle.py`.
 
 ## 2026-08-19 (continued into 2026-08-20)
 

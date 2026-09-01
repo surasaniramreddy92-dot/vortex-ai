@@ -1,4 +1,4 @@
-"""Owner-context foundation (2026-08-20) - Phase 4 of the Standby+
+"""Owner-context foundation (2026-09-01) - Phase 4 of the Standby+
 Activation+Personality/Owner-Context feature.
 
 Deliberately thin: VORTEX is, and remains, a single-owner assistant (no

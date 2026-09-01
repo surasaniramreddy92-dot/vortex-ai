@@ -63,12 +63,12 @@ src/vortex/
 │   ├── policy_engine.py    #   BUILT - is_affirmative() yes/no classification. A fully
 │   │                       #   general confirmation-policy engine was NOT built - deliberately
 │   │                       #   out of scope, see §3 below
-│   ├── personality.py      #   BUILT (Standby/Activation/Personality foundation, 2026-08-20) -
+│   ├── personality.py      #   BUILT (Standby/Activation/Personality foundation, 2026-09-01) -
 │   │                       #   PersonalityMode enum + build_system_prompt(), the one live
 │   │                       #   integration point into app.py's ask_llm_stream
-│   ├── owner_context.py    #   BUILT (2026-08-20) - thin single-owner identity object;
+│   ├── owner_context.py    #   BUILT (2026-09-01) - thin single-owner identity object;
 │   │                       #   session_state/personality_mode delegate live to Vortex, not copied
-│   ├── social_context.py   #   BUILT (2026-08-20) - SocialLabel enum + a deliberately simple,
+│   ├── social_context.py   #   BUILT (2026-09-01) - SocialLabel enum + a deliberately simple,
 │   │                       #   rule-based classify() - see its module docstring for why this is
 │   │                       #   honestly scoped as a foundation, not real social understanding
 │   └── events.py           #   NOT BUILT - events between pieces are plain strings/queue
