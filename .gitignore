@@ -32,3 +32,13 @@ tools/qdrant/.qdrant-initialized
 
 # Empty placeholder directory, not part of the source tree
 /models/
+
+# Custom voice training (tools/voice_training/) - real recorded voice audio,
+# training checkpoints, and exported models are personal data / large
+# binaries, never committed. See tools/voice_training/README.md.
+tools/voice_training/dataset/
+tools/voice_training/smoke_test_dataset/
+tools/voice_training/runs/
+tools/voice_training/exported/
+tools/voice_training/lightning_logs/
+tools/voice_training/checkpoints/

@@ -123,6 +123,33 @@ wakeword-training = [
     "imageio-ffmpeg==0.6.0",
     "scikit-learn==1.9.0",
 ]
+# Only needed to run tools/voice_training/ (training a custom Piper TTS
+# voice on the owner's own recorded voice, 2026-09-02 - see
+# tools/voice_training/README.md) - not needed to run VORTEX itself.
+# piper-tts (voice-offline extra) bundles the actual VITS training code
+# (piper/train/) but deliberately declares none of these as its own
+# dependencies - they're heavy (multi-hundred-MB+) and only the tiny
+# fraction of users who want to train a new voice need them.
+#
+# IMPORTANT: plain `pip install -e ".[voice-training]"` pulls torch's
+# default wheel, which bundles CUDA redistributables even on a machine with
+# no NVIDIA GPU (this project's own dev machine has none - Intel integrated
+# graphics only). To get the smaller CPU-only build instead, install torch
+# separately first:
+#   pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+# then `pip install -e ".[voice-training]"` as normal (pip won't reinstall
+# a version requirement that's already satisfied).
+voice-training = [
+    "torch==2.14.0",
+    "lightning==2.6.5",
+    "librosa==0.11.0",
+    "pysilero-vad==3.4.0",
+    # lightning's own LightningCLI (what piper/train/__main__.py uses) needs
+    # this signatures extra to parse its config - not pulled in by plain
+    # `lightning` itself. Caught by actually running the training CLI, not
+    # assumed from lightning's docs alone.
+    "jsonargparse[signatures]==4.52.0",
+]
 # Gmail-backed email: check/summarize unread mail and draft+send replies,
 # gated behind the same awaiting_confirmation yes/no flow every other
 # destructive/consequential action already uses - VORTEX drafts, you approve,

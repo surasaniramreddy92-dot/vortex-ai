@@ -8,7 +8,62 @@ commit diffs. Phase-by-phase status (not date-based) lives in
 
 ## 2026-09-02
 
-### Added — TTS prosody controls (direct user feedback: "the voice itself sounds robotic")
+### Added — custom voice training infrastructure (direct user request: "I want to train a new voice model")
+
+After prosody tuning and a voice comparison (both below) still left the
+voice sounding like a commercial TTS engine, the user wanted a real
+custom-trained voice on their own recorded voice - not a clone of Emma or
+any other commercial voice (a real legal problem, not just technical).
+
+Checked hardware first: no NVIDIA GPU on this machine (Intel integrated
+graphics only). Training a real generative voice model on CPU is
+documented to be dramatically slower than GPU - the user chose to proceed
+anyway, accepting a "working first pass, not polished" result, the same
+honest framing `tools/wakeword/build_hey_vortex.py` already uses.
+
+- New `tools/voice_training/` - mirrors `tools/wakeword/`'s own precedent
+  exactly: a new `voice-training` pyproject extra (`torch`, `lightning`,
+  `librosa`, `pysilero-vad`, `jsonargparse[signatures]`), isolated from
+  `src/vortex/` entirely. Needs zero VORTEX source changes to integrate
+  later - the runtime already resolves any named offline Piper voice via
+  `VORTEX_OFFLINE_TTS_VOICE`/`VORTEX_OFFLINE_TTS_MODEL_DIR`.
+- `script.py` (155 hand-composed, phonetically varied sentences),
+  `record.py` (a resumable recording helper the user runs themselves -
+  there's no way to participate in live audio recording from this side).
+- **Two real bugs in the published `piper-tts==1.7.0` package found and
+  fixed, both confirmed by actually running the pipeline against a
+  throwaway fake dataset, not assumed:**
+  1. `SileroVoiceActivityDetector.process_array` doesn't exist in any
+     currently-published `pysilero-vad` release (checked 3.4.0 and 3.0.0
+     directly) - `process_samples` is the same-shaped equivalent, patched
+     in by `train.py`.
+  2. The Cython source (`core.pyx`) for the required monotonic-alignment
+     extension is missing from the PyPI wheel entirely (checked 1.7.0 and
+     1.6.1 - present in neither) - no C compiler would have fixed this,
+     there was nothing to compile. Fetched the real source directly from
+     the project's GitHub repo via a raw HTTP request (deliberately not
+     an LLM-summarizing fetch - algorithmic source must be exact, not
+     paraphrased), ported it line-for-line to Numba
+     (`_monotonic_align_numba.py`, already an indirect dependency via
+     `librosa`), and verified correctness against hand-computable cases
+     (5 new tests) before trusting it with real training.
+- **Live-verified end to end**: a real training step (`fast_dev_run`)
+  completed successfully against the fake dataset - dependencies resolve,
+  phonemization works, the model builds, a real forward/backward pass
+  runs. This proves the pipeline works; it cannot and does not produce a
+  usable voice (2-3 synthetic clips is nowhere near enough data) - deleted
+  after the test, not mistaken for real progress.
+- **Explicitly not done yet**: the user hasn't recorded the real script,
+  so no real voice model exists. Automated MOS-based checkpoint scoring
+  was deliberately left disabled (`torchaudio` has no release matching
+  the pinned `torch==2.14.0` yet, and forcing a mismatched pair risked
+  destabilizing a pipeline that took real debugging to get working) -
+  checkpoint selection will rely on the already-working `val_mel` metric
+  plus the user's own ears, the intended final check regardless.
+- `.gitignore` updated so the real recorded dataset, checkpoints, and
+  exported models (personal data / large binaries) never get committed.
+
+### Added — TTS prosody controls (earlier the same day, direct user feedback: "the voice itself sounds robotic")
 
 Checked first whether the offline Piper fallback (more robotic-sounding
 than edge-tts) was silently doing the real work - it wasn't; the log

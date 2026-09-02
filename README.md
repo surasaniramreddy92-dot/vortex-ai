@@ -43,6 +43,7 @@ everything else.
 | 8 | Vision | Started |
 | N/A | Communication (Email) — not one of the original 17 phases, see [IMPLEMENTED.md](IMPLEMENTED.md) | Started |
 | N/A | Standby/Activation/Personality/Owner-Context Foundation — not one of the original 17 phases, see [IMPLEMENTED.md](IMPLEMENTED.md) | Started |
+| N/A | Custom Voice Training — not one of the original 17 phases, see [IMPLEMENTED.md](IMPLEMENTED.md) and [tools/voice_training/README.md](tools/voice_training/README.md) | Started |
 | 15 | Security, Identity & Policy Enforcement | Partial |
 
 Everything else in the master roadmap (vision, service layer, durable
