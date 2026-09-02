@@ -24,6 +24,8 @@ def clean_env(monkeypatch):
 def test_defaults_match_main_py():
     cfg = VortexConfig.from_env()
     assert cfg.voice == 'en-US-AvaMultilingualNeural'
+    assert cfg.tts_rate == '-10%'
+    assert cfg.tts_pitch == '+0Hz'
     assert cfg.user_name == 'Boss'
     assert cfg.tts_volume == 1.0
     assert cfg.wake_threshold == 0.60
@@ -86,9 +88,13 @@ def test_wake_word_default_is_repo_relative_not_root_relative():
 def test_env_var_override(monkeypatch):
     monkeypatch.setenv('VORTEX_WAKE_THRESHOLD', '0.65')
     monkeypatch.setenv('VORTEX_VOICE', 'en-GB-SoniaNeural')
+    monkeypatch.setenv('VORTEX_TTS_RATE', '-20%')
+    monkeypatch.setenv('VORTEX_TTS_PITCH', '-5Hz')
     cfg = VortexConfig.from_env()
     assert cfg.wake_threshold == 0.65
     assert cfg.voice == 'en-GB-SoniaNeural'
+    assert cfg.tts_rate == '-20%'
+    assert cfg.tts_pitch == '-5Hz'
 
 
 def test_root_override_changes_dependent_paths_but_not_wake_word(monkeypatch):

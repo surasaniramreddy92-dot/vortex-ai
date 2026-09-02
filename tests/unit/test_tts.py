@@ -39,7 +39,7 @@ def make_tts(**overrides):
 
 def fake_communicate_raising(exc):
     class FakeCommunicate:
-        def __init__(self, text, voice):
+        def __init__(self, text, voice, **kwargs):
             pass
 
         async def save(self, path):
@@ -47,10 +47,46 @@ def fake_communicate_raising(exc):
     return FakeCommunicate
 
 
+def test_synth_passes_configured_rate_and_pitch_to_edge_tts(monkeypatch):
+    """Added 2026-09-02 on direct user feedback that the voice itself
+    "sounds robotic" - edge_tts.Communicate previously got no rate/pitch at
+    all (Microsoft's raw default). Verifies the values actually reach the
+    call, not just that _synth still works - see config.py's tts_rate
+    docstring for why -10% is a reasoned starting point, not something
+    verified by ear the way wake_threshold was."""
+    captured = {}
+
+    class FakeCommunicate:
+        def __init__(self, text, voice, rate=None, pitch=None):
+            captured['rate'] = rate
+            captured['pitch'] = pitch
+
+        async def save(self, path):
+            open(path, 'wb').close()
+    monkeypatch.setattr(tts_module.edge_tts, 'Communicate', FakeCommunicate)
+
+    tts = make_tts(tts_rate='-10%', tts_pitch='+2Hz')
+    loop = asyncio.new_event_loop()
+    try:
+        tts._synth(loop, 'hello there')
+    finally:
+        loop.close()
+
+    assert captured == {'rate': '-10%', 'pitch': '+2Hz'}
+
+
+def test_tts_rate_and_pitch_default_to_unchanged_engine_behavior():
+    """Purely additive constructor params - a caller that doesn't pass them
+    (e.g. test_barge_in.py's make_tts()) must behave exactly as before."""
+    tts = make_tts()
+    assert tts.tts_rate == '+0%'
+    assert tts.tts_pitch == '+0Hz'
+
+
 def test_cloud_success_never_touches_offline_path(monkeypatch, tmp_path):
     """Matches existing behavior exactly when online."""
     class FakeCommunicate:
-        def __init__(self, text, voice):
+        def __init__(self, text, voice, **kwargs):
             pass
 
         async def save(self, path):

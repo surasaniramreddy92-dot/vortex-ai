@@ -60,6 +60,8 @@ load_dotenv()
 _cfg = VortexConfig.from_env()
 ROOT = _cfg.root
 VOICE = _cfg.voice
+TTS_RATE = _cfg.tts_rate
+TTS_PITCH = _cfg.tts_pitch
 USER_NAME = _cfg.user_name
 # Standby/Activation/Personality foundation (2026-08-20).
 ACTIVATION_RESPONSE = _cfg.activation_response
@@ -190,7 +192,8 @@ class Vortex:
         self.tts = TextToSpeech(voice=VOICE, tts_volume=TTS_VOLUME, barge_in=self.barge_in,
                                  log=self.log, is_running=lambda: self.running,
                                  offline_enabled=OFFLINE_FALLBACK_ENABLED, offline_voice=OFFLINE_TTS_VOICE,
-                                 offline_model_dir=OFFLINE_TTS_MODEL_DIR)
+                                 offline_model_dir=OFFLINE_TTS_MODEL_DIR,
+                                 tts_rate=TTS_RATE, tts_pitch=TTS_PITCH)
         self.stt = SpeechToText(
             recognizer=self.recognizer, capturing=self.capturing, agc_target_rms=AGC_TARGET_RMS,
             stop_wake_stream=self.wake.stop_stream, recover_wake_stream=self.wake.recover_stream,

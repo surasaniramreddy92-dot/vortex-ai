@@ -63,7 +63,7 @@ class TextToSpeech:
 
     def __init__(self, *, voice, tts_volume, barge_in, log, is_running,
                  offline_enabled=True, offline_voice='en_US-lessac-medium',
-                 offline_model_dir=None):
+                 offline_model_dir=None, tts_rate='+0%', tts_pitch='+0Hz'):
         self.voice = voice
         self.tts_volume = tts_volume
         self.barge_in = barge_in
@@ -72,6 +72,16 @@ class TextToSpeech:
         self.offline_enabled = offline_enabled
         self.offline_voice = offline_voice
         self.offline_model_dir = offline_model_dir
+        # edge-tts's own prosody controls (SSML rate/pitch, distinct from
+        # tts_volume above, which is pygame's post-synthesis playback volume,
+        # not part of the synthesized audio itself) - added 2026-09-02 on
+        # direct user feedback that the voice itself "sounds robotic," not
+        # anything about what it says. See config.py's tts_rate docstring for
+        # why these are a reasoned starting point, not something verified by
+        # ear the way wake_threshold was - that needs the user's own
+        # listening judgment, not something checkable from this environment.
+        self.tts_rate = tts_rate
+        self.tts_pitch = tts_pitch
         self._offline_piper_voice = _UNSET  # lazy singleton - see _get_offline_voice
 
     def _chunk_stream(self, fragments):
@@ -117,7 +127,8 @@ class TextToSpeech:
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         path = tmp.name
         tmp.close()
-        task = loop.create_task(edge_tts.Communicate(text, self.voice).save(path))
+        task = loop.create_task(
+            edge_tts.Communicate(text, self.voice, rate=self.tts_rate, pitch=self.tts_pitch).save(path))
         try:
             while not task.done():
                 if self.barge_in.stop_speaking.is_set() or not self.is_running():

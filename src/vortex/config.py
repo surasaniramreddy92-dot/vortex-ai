@@ -81,6 +81,28 @@ _DEFAULT_WAKE_WORD_PATH = (
 class VortexConfig:
     root: str = field(default_factory=_default_root)
     voice: str = field(default_factory=lambda: os.getenv('VORTEX_VOICE', 'en-US-AvaMultilingualNeural'))
+    # edge-tts's own SSML prosody controls, added 2026-09-02 on direct user
+    # feedback that the voice itself "sounds robotic/computer generated" -
+    # not the content of what it says (already addressed separately - see
+    # core/self_knowledge.py). Never touched before this: voice/tts.py's
+    # _synth() called edge_tts.Communicate with no rate/pitch at all, i.e.
+    # Microsoft's raw default delivery. -10% rate is a commonly-cited,
+    # moderate adjustment for a calmer, less rushed-sounding cadence -
+    # genuinely a reasoned starting point, NOT independently re-derived
+    # through repeated real-listening trials the way wake_threshold was:
+    # judging whether synthesized speech actually sounds more natural needs
+    # a human ear, which isn't something checkable from this environment.
+    # Pitch deliberately left at the engine default (+0Hz) rather than also
+    # shifted - an arbitrary global pitch transpose on an already-natural
+    # neural voice is more likely to sound uncannier, not warmer, unlike a
+    # human's actual pitch variation. Real trade-off, not free: a slower
+    # rate means every utterance takes longer to finish, which very slightly
+    # widens the exact near-field self-noise window barge-in already
+    # struggles with (see tts_volume below and demonstrate_self()'s barge-in
+    # fixes) - kept modest specifically because of that, not chosen for
+    # sound quality alone.
+    tts_rate: str = field(default_factory=lambda: os.getenv('VORTEX_TTS_RATE', '-10%'))
+    tts_pitch: str = field(default_factory=lambda: os.getenv('VORTEX_TTS_PITCH', '+0Hz'))
     user_name: str = field(default_factory=lambda: os.getenv('USER_NAME', 'Boss'))
     # Standby/Activation foundation (2026-08-20): the spoken acknowledgment on
     # a fresh wake vs. a barge-in interruption were hardcoded literals in

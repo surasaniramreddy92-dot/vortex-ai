@@ -6,6 +6,38 @@ this file is the fast way to see what changed and when without reading full
 commit diffs. Phase-by-phase status (not date-based) lives in
 `IMPLEMENTED.md`; this file is chronological.
 
+## 2026-09-02
+
+### Added — TTS prosody controls (direct user feedback: "the voice itself sounds robotic")
+
+Checked first whether the offline Piper fallback (more robotic-sounding
+than edge-tts) was silently doing the real work - it wasn't; the log
+showed it's only ever pre-warmed, never actually triggered for real
+speech. The real primary voice (`en-US-AvaMultilingualNeural` via
+edge-tts) had never been given anything but bare text - `voice/tts.py`'s
+`_synth()` called `edge_tts.Communicate(text, self.voice)` with no rate or
+pitch at all, i.e. Microsoft's raw default delivery.
+
+- `VortexConfig.tts_rate`/`tts_pitch` (`VORTEX_TTS_RATE`/`VORTEX_TTS_PITCH`)
+  now thread through to edge-tts's real SSML prosody parameters. Default
+  rate `-10%` - a commonly-cited, moderate adjustment for a calmer, less
+  rushed cadence. Pitch stays at `+0Hz` on purpose (an arbitrary global
+  pitch shift on an already-natural neural voice tends to sound uncannier,
+  not warmer).
+- **Honest scope**: unlike `wake_threshold`, this default was NOT
+  independently verified through repeated real-listening trials -
+  judging whether synthesized speech sounds more human needs the user's
+  own ears, not something checkable from this environment. What IS
+  verified: the wiring is real, not cosmetic - the same sentence
+  synthesized at `+0%` vs `-10%` produced measurably different audio
+  (5.06s vs 5.71s, +12.8%), proving the parameter reaches Microsoft's API.
+- Real trade-off, disclosed: a slower rate means every utterance takes
+  marginally longer, very slightly widening the near-field self-noise
+  window barge-in already struggles with - kept modest specifically
+  because of that.
+- 4 new unit tests (`test_tts.py`, `test_config.py`), full regression
+  suite stayed green.
+
 ## 2026-09-01
 
 ### Added — Standby/Activation/Personality/Owner-Context foundation
