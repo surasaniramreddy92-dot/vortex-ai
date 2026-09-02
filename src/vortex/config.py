@@ -80,7 +80,14 @@ _DEFAULT_WAKE_WORD_PATH = (
 @dataclass(frozen=True)
 class VortexConfig:
     root: str = field(default_factory=_default_root)
-    voice: str = field(default_factory=lambda: os.getenv('VORTEX_VOICE', 'en-US-AvaMultilingualNeural'))
+    # Switched from en-US-AvaMultilingualNeural to en-US-EmmaMultilingualNeural
+    # 2026-09-02, on direct user choice after listening to 5 real generated
+    # samples (current voice + 4 candidates, all Microsoft's own "Conversation/
+    # Copilot"-tagged voices, not the more commonly-recommended
+    # Aria/Guy - those are tagged for News/Novel narration, not assistant
+    # conversation). Emma's own personality tags include "Conversational"
+    # specifically, not just "Friendly"/"Expressive" like Ava's.
+    voice: str = field(default_factory=lambda: os.getenv('VORTEX_VOICE', 'en-US-EmmaMultilingualNeural'))
     # edge-tts's own SSML prosody controls, added 2026-09-02 on direct user
     # feedback that the voice itself "sounds robotic/computer generated" -
     # not the content of what it says (already addressed separately - see

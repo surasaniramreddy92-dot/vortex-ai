@@ -38,6 +38,22 @@ pitch at all, i.e. Microsoft's raw default delivery.
 - 4 new unit tests (`test_tts.py`, `test_config.py`), full regression
   suite stayed green.
 
+### Changed — default voice, same day, direct user choice after real comparison
+
+Generated 5 real samples of the same sentence (current voice + 4
+candidates) instead of guessing which would sound more natural - all
+Microsoft's own "Conversation/Copilot"-tagged voices specifically, not the
+more commonly name-recognized Aria/Guy, which checking real voice metadata
+showed are tagged for News/Novel narration, not assistant conversation.
+User picked `en-US-EmmaMultilingualNeural` (tagged "Cheerful, Clear,
+**Conversational**" - the only candidate with that exact tag) over the
+previous default, `en-US-AvaMultilingualNeural`.
+
+Updated both `config.py`'s code default and this machine's own `.env`,
+which had the old voice pinned explicitly - caught by live-verifying the
+actual running value (`v.tts.voice`) after the code change, not assumed
+from the source edit alone.
+
 ## 2026-09-01
 
 ### Added — Standby/Activation/Personality/Owner-Context foundation

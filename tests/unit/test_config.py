@@ -23,7 +23,7 @@ def clean_env(monkeypatch):
 
 def test_defaults_match_main_py():
     cfg = VortexConfig.from_env()
-    assert cfg.voice == 'en-US-AvaMultilingualNeural'
+    assert cfg.voice == 'en-US-EmmaMultilingualNeural'
     assert cfg.tts_rate == '-10%'
     assert cfg.tts_pitch == '+0Hz'
     assert cfg.user_name == 'Boss'

@@ -175,7 +175,7 @@ While VORTEX is talking, saying "Hey Vortex" again cuts it off mid-sentence
 | Variable | Default | Purpose |
 |---|---|---|
 | `VORTEX_HOME` | `~/.vortex` | where logs/data/memory live. Set this to point at an existing install's directory to preserve continuity rather than starting fresh |
-| `VORTEX_VOICE` | `en-US-AvaMultilingualNeural` | edge-tts voice |
+| `VORTEX_VOICE` | `en-US-EmmaMultilingualNeural` | edge-tts voice — chosen 2026-09-02 after the user compared 5 real generated samples (see `IMPLEMENTED.md`'s Phase 1 row) |
 | `VORTEX_TTS_RATE` | `-10%` | edge-tts speaking-rate offset — a reasoned starting point for a calmer, less rushed cadence (direct user feedback that the voice "sounds robotic"), not independently verified by ear the way `VORTEX_WAKE_THRESHOLD` was; a slower rate also very slightly widens the barge-in self-noise window, so this is intentionally modest |
 | `VORTEX_TTS_PITCH` | `+0Hz` | edge-tts pitch offset — left at the engine default on purpose; an arbitrary global pitch shift on an already-natural neural voice tends to sound uncannier, not warmer |
 | `USER_NAME` | `Boss` | how VORTEX addresses you |
